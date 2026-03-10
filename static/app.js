@@ -1,4 +1,11 @@
 const API = '';
+const METRO_COLOR = '#5EC4BC'; // M1 / M2 固定カラー
+
+// M1/M2 はエンドポイントのカラーを無視して固定色を使う
+function resolveRouteColor(routeShort, routeColor) {
+  if (routeShort === 'M1' || routeShort === 'M2') return METRO_COLOR;
+  return routeColor || '';
+}
 
 let autoRefreshEnabled = true;
 let currentStopId = null;  // ターミナルはparent_id、通常停はstop_id
@@ -209,7 +216,7 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
   if (stopDotLayer) { map.removeLayer(stopDotLayer); stopDotLayer = null; }
 
   const hint = document.getElementById('map-hint');
-  const lineColor = routeColor || '#0099ff';
+  const lineColor = resolveRouteColor(routeShort, routeColor) || '#0099ff';
   hint.innerHTML = `<span style="color:var(--muted)">Loading…</span>`;
 
   // shape と trip stops を並列取得（重複リクエストを排除）
@@ -220,7 +227,7 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
 
   let stData = null;
   if (stRes && stRes.ok) {
-    try { stData = await stRes.json(); } catch {}
+    try { stData = await stRes.json(); } catch { }
   }
 
   // タイムラインは shape の有無に関わらず常に表示（データを渡して再利用）
@@ -236,8 +243,8 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
 
     const coords = data.coords.map(c => [c[0], c[1]]);
     const glowOuter = L.polyline(coords, { color: lineColor, weight: 14, opacity: 0.10, lineJoin: 'round' });
-    const glowInner = L.polyline(coords, { color: lineColor, weight: 7,  opacity: 0.28, lineJoin: 'round' });
-    const coreLine  = L.polyline(coords, { color: lineColor, weight: 3,  opacity: 1.00, lineJoin: 'round' });
+    const glowInner = L.polyline(coords, { color: lineColor, weight: 7, opacity: 0.28, lineJoin: 'round' });
+    const coreLine = L.polyline(coords, { color: lineColor, weight: 3, opacity: 1.00, lineJoin: 'round' });
     routeLayer = L.featureGroup([glowOuter, glowInner, coreLine]).addTo(map);
 
     // ネオントレースアニメーション（繰り返し）
@@ -545,8 +552,8 @@ function renderArrivals(arrivals, showAll = false) {
     const headsign = a.headsign || a.route_long_name || '—';
     const sub = a.headsign ? a.route_long_name : '';
     const active = i === activeCardIndex ? ' active' : '';
-    const bgColor = a.route_color || 'var(--accent2)';
-    const textColor = a.route_text_color || '#ffffff';
+    const bgColor = resolveRouteColor(a.route_short_name, a.route_color) || 'var(--accent2)';
+    const textColor = (a.route_short_name === 'M1' || a.route_short_name === 'M2') ? '#000000' : (a.route_text_color || '#ffffff');
 
     const clockTime = new Date(a.arrival_time * 1000).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false });
 
@@ -803,3 +810,131 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.search-wrap') && !e.target.closest('#stop-list'))
     stopList.classList.remove('visible');
 });
+
+// ── Service Alerts ────────────────────────────────────────────────────────────
+let alertsCache = [];
+let alertFilterTag = null; // 選択中のルートタグフィルタ（null = 全表示）
+
+async function fetchAlerts() {
+  try {
+    const res = await fetch(`${API}/api/alerts`);
+    if (!res.ok) return;
+    alertsCache = await res.json();
+  } catch {
+    alertsCache = [];
+  }
+
+  const bar = document.getElementById('alert-bar');
+  const badge = document.getElementById('alert-count-badge');
+  const count = alertsCache.length;
+
+  if (count > 0) {
+    bar.style.display = 'block';
+    badge.textContent = count;
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
+function openAlertPanel() {
+  alertFilterTag = null;
+  renderAlertPanel();
+  document.getElementById('alert-panel').classList.add('open');
+  document.getElementById('alert-overlay').classList.add('open');
+}
+
+function closeAlertPanel() {
+  document.getElementById('alert-panel').classList.remove('open');
+  document.getElementById('alert-overlay').classList.remove('open');
+}
+
+function setAlertFilter(tag) {
+  alertFilterTag = alertFilterTag === tag ? null : tag; // 同じタグをクリックで解除
+  renderAlertPanel();
+}
+
+function renderAlertPanel() {
+  const list = document.getElementById('alert-panel-list');
+  if (!alertsCache.length) {
+    list.innerHTML = `<div class="alert-empty">No active service alerts.</div>`;
+    return;
+  }
+
+  // 全ルートタグを収集してフィルタバーを構築
+  const allTags = [...new Set(alertsCache.flatMap(a => a.route_short_names))].sort();
+
+  const filterBar = allTags.length > 1 ? `
+    <div class="alert-filter-bar">
+      ${allTags.map(t => `
+        <button class="alert-filter-tag${alertFilterTag === t ? ' active' : ''}"
+                onclick="setAlertFilter('${escAttr(t)}')">${escHtml(t)}</button>
+      `).join('')}
+    </div>` : '';
+
+  // フィルタ適用
+  const filtered = alertFilterTag
+    ? alertsCache.filter(a => a.route_short_names.includes(alertFilterTag))
+    : alertsCache;
+
+  const countLabel = alertFilterTag
+    ? `<div class="alert-filter-count">${filtered.length} alert${filtered.length !== 1 ? 's' : ''} for ${escHtml(alertFilterTag)}</div>`
+    : '';
+
+  const items = filtered.length ? filtered.map((a, i) => {
+    const routeTags = a.route_short_names.length
+      ? a.route_short_names.map(r => `
+          <button class="alert-route-tag${alertFilterTag === r ? ' active' : ''}"
+                  onclick="setAlertFilter('${escAttr(r)}')">${escHtml(r)}</button>`).join('')
+      : '';
+    const metaTags = [a.cause, a.effect].filter(Boolean)
+      .map(t => `<span class="alert-meta-tag">${escHtml(t)}</span>`).join('');
+    return `
+      <div class="alert-item" style="animation-delay:${i * 0.04}s">
+        ${routeTags ? `<div class="alert-routes">${routeTags}</div>` : ''}
+        ${a.header ? `<div class="alert-header">${escHtml(a.header)}</div>` : ''}
+        ${a.description ? `<div class="alert-description">${escHtml(a.description)}</div>` : ''}
+        ${metaTags ? `<div class="alert-meta">${metaTags}</div>` : ''}
+      </div>`;
+  }).join('') : `<div class="alert-empty">No alerts for ${escHtml(alertFilterTag)}.</div>`;
+
+  list.innerHTML = filterBar + countLabel + items;
+}
+
+// アラートを起動時に取得し、以降5分ごとに更新
+fetchAlerts();
+setInterval(fetchAlerts, 5 * 60 * 1000);
+
+// ── Inactivity auto-refresh disable (15 min) ──────────────────────────────────
+const INACTIVITY_MS = 15 * 60 * 1000; // 15分
+let inactivityTimer = null;
+
+function resetInactivityTimer() {
+  clearTimeout(inactivityTimer);
+  inactivityTimer = setTimeout(onInactivityTimeout, INACTIVITY_MS);
+}
+
+function onInactivityTimeout() {
+  if (!autoRefreshEnabled) return;
+  // 自動更新をオフ
+  autoRefreshEnabled = false;
+  clearInterval(refreshTimer);
+  const btn = document.getElementById('auto-refresh-toggle');
+  if (btn) btn.classList.remove('active');
+  document.getElementById('refresh-bar').classList.remove('visible');
+  document.getElementById('inactivity-notice').classList.add('visible');
+}
+
+function resumeFromInactivity() {
+  document.getElementById('inactivity-notice').classList.remove('visible');
+  autoRefreshEnabled = true;
+  const btn = document.getElementById('auto-refresh-toggle');
+  if (btn) btn.classList.add('active');
+  if (currentStopId) startAutoRefresh(currentStopId);
+  resetInactivityTimer();
+}
+
+// ユーザー操作でタイマーをリセット
+['click', 'keydown', 'touchstart', 'scroll'].forEach(evt => {
+  document.addEventListener(evt, resetInactivityTimer, { passive: true });
+});
+resetInactivityTimer();

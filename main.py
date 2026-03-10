@@ -135,7 +135,8 @@ import datetime as _dt
 BRISBANE_TZ = _dt.timezone(_dt.timedelta(hours=10))
 
 # ── Realtime endpoints ────────────────────────────────────────────────────────
-TRIP_UPDATES_URL = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates/Bus"
+TRIP_UPDATES_URL  = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates/Bus"
+SEQ_COMBINED_URL  = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ"
 
 # ── GTFS-RT feed cache (30s TTL) ─────────────────────────────────────────────
 _feed_cache: dict = {"data": None, "expires": 0.0}
@@ -152,6 +153,41 @@ def get_feed() -> gtfs_realtime_pb2.FeedMessage:
         _feed_cache["data"] = feed
         _feed_cache["expires"] = time.time() + 30
         return feed
+
+# ── SEQ combined feed cache (60s TTL, for alerts) ────────────────────────────
+_seq_cache: dict = {"data": None, "expires": 0.0}
+_seq_lock = threading.Lock()
+
+def get_seq_feed() -> gtfs_realtime_pb2.FeedMessage:
+    with _seq_lock:
+        if time.time() < _seq_cache["expires"] and _seq_cache["data"] is not None:
+            return _seq_cache["data"]
+        resp = requests.get(SEQ_COMBINED_URL, timeout=10)
+        resp.raise_for_status()
+        feed = gtfs_realtime_pb2.FeedMessage()
+        feed.ParseFromString(resp.content)
+        _seq_cache["data"] = feed
+        _seq_cache["expires"] = time.time() + 60
+        return feed
+
+CAUSE_NAMES = {
+    1: "Unknown cause", 2: "Other cause", 3: "Technical problem", 4: "Strike",
+    5: "Demonstration", 6: "Accident", 7: "Holiday", 8: "Weather",
+    9: "Maintenance", 10: "Construction", 11: "Police activity", 12: "Medical emergency",
+}
+EFFECT_NAMES = {
+    1: "No service", 2: "Reduced service", 3: "Significant delays",
+    4: "Detour", 5: "Additional service", 6: "Modified service",
+    7: "Other effect", 8: "Unknown effect", 9: "Stop moved", 10: "No effect",
+}
+
+def _get_translated_text(translated) -> str:
+    if not translated.translation:
+        return ""
+    for t in translated.translation:
+        if t.language in ("en", "en-AU", "en-au", ""):
+            return t.text
+    return translated.translation[0].text
 
 # ── Static timetable fallback helper ─────────────────────────────────────────
 def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0):
@@ -734,6 +770,70 @@ def get_trip_stops(request: Request, trip_id: str):
         })
 
     return {"trip_id": trip_id, "stops": stops_list}
+
+
+@app.get("/api/alerts")
+@limiter.limit("20/minute")
+def get_alerts(request: Request):
+    """GTFS-RT ServiceAlerts を返す（アクティブな警報のみ）"""
+    try:
+        feed = get_seq_feed()
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Translink API error: {e}")
+
+    now = time.time()
+    alerts = []
+
+    for entity in feed.entity:
+        if not entity.HasField("alert"):
+            continue
+        alert = entity.alert
+
+        # active_period フィルタ（設定がある場合のみ）
+        if alert.active_period:
+            active = False
+            for period in alert.active_period:
+                start = period.start if period.start else 0
+                end   = period.end   if period.end   else float("inf")
+                if start <= now <= end:
+                    active = True
+                    break
+            if not active:
+                continue
+
+        # informed_entity から route/stop を収集
+        route_ids = []
+        stop_ids  = []
+        for ie in alert.informed_entity:
+            if ie.route_id:
+                route_ids.append(ie.route_id)
+            if ie.stop_id:
+                stop_ids.append(ie.stop_id)
+
+        # route_id → route_short_name に変換
+        route_short_names = []
+        for rid in route_ids:
+            if bus_routes_df is not None and rid in bus_routes_df.index:
+                rsn = str(bus_routes_df.loc[rid].get("route_short_name", "") or "")
+                if rsn:
+                    route_short_names.append(rsn)
+
+        header      = _get_translated_text(alert.header_text)
+        description = _get_translated_text(alert.description_text)
+        if not header and not description:
+            continue
+
+        alerts.append({
+            "id":                entity.id,
+            "header":            header,
+            "description":       description,
+            "cause":             CAUSE_NAMES.get(alert.cause, ""),
+            "effect":            EFFECT_NAMES.get(alert.effect, ""),
+            "route_short_names": sorted(set(route_short_names)),
+            "stop_ids":          sorted(set(stop_ids)),
+        })
+
+    return alerts
 
 
 @app.get("/api/shapes/{shape_id:path}")  # :path でスラッシュを含むIDも受け取れる

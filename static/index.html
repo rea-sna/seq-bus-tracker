@@ -35,7 +35,20 @@
     </div>
     <div id="stop-list"></div>
 
+    <div id="alert-bar" style="display:none;">
+      <button id="alert-btn" onclick="openAlertPanel()" title="Service Alerts">
+        <span class="alert-bell-icon">🔔</span>
+        <span id="alert-count-badge" class="alert-count-badge"></span>
+        <span class="alert-btn-label">Service Alerts</span>
+      </button>
+    </div>
+
     <div class="error-msg" id="error-msg"></div>
+
+    <div id="inactivity-notice">
+      <span>Auto-refresh paused after 30 min of inactivity.</span>
+      <button class="inactivity-resume" onclick="resumeFromInactivity()">Resume</button>
+    </div>
 
     <div id="stop-header">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
@@ -84,6 +97,19 @@
       <span class="live-dot">LIVE</span>
     </footer>
 
+  </div>
+
+  <!-- Alert panel overlay -->
+  <div id="alert-overlay" onclick="closeAlertPanel()"></div>
+  <div id="alert-panel">
+    <div class="alert-panel-header">
+      <div class="alert-panel-title">
+        <span class="alert-bell-icon">🔔</span>
+        Service Alerts
+      </div>
+      <button class="alert-panel-close" onclick="closeAlertPanel()">×</button>
+    </div>
+    <div id="alert-panel-list"></div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
