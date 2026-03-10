@@ -1,0 +1,14 @@
+# GTFSデータ（大きいのでGitHubには含めない・Render起動時に自動DL）
+gtfs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+*.zip
+
+# macOS
+.DS_Store
