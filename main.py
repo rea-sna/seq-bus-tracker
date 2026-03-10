@@ -398,12 +398,12 @@ def search_stops(request: Request, q: str = ""):
             parent_row = stops_df[stops_df["stop_id"] == parent]
             if not parent_row.empty:
                 station_name = parent_row.iloc[0]["stop_name"]
-                station_lat  = parent_row.iloc[0]["stop_lat"]
-                station_lon  = parent_row.iloc[0]["stop_lon"]
+                station_lat  = float(parent_row.iloc[0]["stop_lat"])
+                station_lon  = float(parent_row.iloc[0]["stop_lon"])
             else:
                 station_name = row["stop_name"]
-                station_lat  = row["stop_lat"]
-                station_lon  = row["stop_lon"]
+                station_lat  = float(row["stop_lat"])
+                station_lon  = float(row["stop_lon"])
 
             platforms = []
             for _, sib in siblings.iterrows():
@@ -414,8 +414,8 @@ def search_stops(request: Request, q: str = ""):
                 platforms.append({
                     "stop_id":       sib["stop_id"],
                     "stop_name":     sib["stop_name"],
-                    "stop_lat":      sib["stop_lat"],
-                    "stop_lon":      sib["stop_lon"],
+                    "stop_lat":      float(sib["stop_lat"]),
+                    "stop_lon":      float(sib["stop_lon"]),
                     "platform_code": pf or sc,
                 })
 
@@ -433,8 +433,8 @@ def search_stops(request: Request, q: str = ""):
             results.append({
                 "stop_id":     row["stop_id"],
                 "stop_name":   row["stop_name"],
-                "stop_lat":    row["stop_lat"],
-                "stop_lon":    row["stop_lon"],
+                "stop_lat":    float(row["stop_lat"]),
+                "stop_lon":    float(row["stop_lon"]),
                 "is_terminal": False,
                 "platforms":   [],
             })
@@ -734,7 +734,13 @@ def get_stop(request: Request, stop_id: str):
     row = stops_df[stops_df["stop_id"] == str(stop_id)]
     if row.empty:
         raise HTTPException(404, "Stop not found")
-    return row.iloc[0][["stop_id", "stop_name", "stop_lat", "stop_lon"]].to_dict()
+    r = row.iloc[0]
+    return {
+        "stop_id":   r["stop_id"],
+        "stop_name": r["stop_name"],
+        "stop_lat":  float(r["stop_lat"]),
+        "stop_lon":  float(r["stop_lon"]),
+    }
 
 
 @app.get("/api/trips/{trip_id:path}/stops")
@@ -806,8 +812,8 @@ def get_trip_stops(request: Request, trip_id: str):
         stops_list.append({
             "stop_id":        sid,
             "stop_name":      row.get("stop_name", ""),
-            "stop_lat":       row.get("stop_lat", ""),
-            "stop_lon":       row.get("stop_lon", ""),
+            "stop_lat":       float(row.get("stop_lat", 0.0) or 0.0),
+            "stop_lon":       float(row.get("stop_lon", 0.0) or 0.0),
             "static_time":    static_time_str,
             "predicted_unix": predicted_unix,
             "passed":         passed,

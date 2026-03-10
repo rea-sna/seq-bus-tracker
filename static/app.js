@@ -167,29 +167,58 @@ const TILES = {
   }
 };
 
-function getScheme() {
+// ── Theme management ──────────────────────────────────────────────────────────
+const THEME_KEY = 'seq_theme';
+
+function getEffectiveTheme() {
+  const stored = localStorage.getItem(THEME_KEY);
+  if (stored === 'light' || stored === 'dark') return stored;
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
-let tileLayer = L.tileLayer(TILES[getScheme()].url, {
-  attribution: TILES[getScheme()].attribution,
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  const btn = document.getElementById('theme-toggle');
+  if (btn) {
+    btn.textContent = theme === 'dark' ? '☀' : '🌙';
+    btn.title = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  updateMapTiles(theme);
+}
+
+function toggleTheme() {
+  const next = getEffectiveTheme() === 'dark' ? 'light' : 'dark';
+  localStorage.setItem(THEME_KEY, next);
+  applyTheme(next);
+}
+
+function updateMapTiles(theme) {
+  map.removeLayer(tileLayer);
+  tileLayer = L.tileLayer(TILES[theme].url, {
+    attribution: TILES[theme].attribution,
+    subdomains: 'abcd',
+    maxZoom: 20
+  }).addTo(map);
+  tileLayer.bringToBack();
+}
+
+let tileLayer = L.tileLayer(TILES[getEffectiveTheme()].url, {
+  attribution: TILES[getEffectiveTheme()].attribution,
   subdomains: 'abcd',
   maxZoom: 20
 }).addTo(map);
 
 map.setView([-27.47, 153.02], 12);
 
-// OSのカラースキーム変化をリアルタイムに検知してタイルを差し替え
+// OSのカラースキーム変化を検知（手動設定がない場合のみ追従）
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-  const scheme = getScheme();
-  map.removeLayer(tileLayer);
-  tileLayer = L.tileLayer(TILES[scheme].url, {
-    attribution: TILES[scheme].attribution,
-    subdomains: 'abcd',
-    maxZoom: 20
-  }).addTo(map);
-  tileLayer.bringToBack();
+  if (!localStorage.getItem(THEME_KEY)) {
+    applyTheme(getEffectiveTheme());
+  }
 });
+
+// 初期テーマを適用（anti-flash スクリプトと同期）
+applyTheme(getEffectiveTheme());
 
 let stopMarker = null;
 let routeLayer = null;

@@ -11,13 +11,23 @@
     rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="style.css" />
+  <script>
+    (function () {
+      var s = localStorage.getItem('seq_theme');
+      var t = s || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
 </head>
 
 <body>
   <div class="container">
 
     <header>
-      <div class="tag">South East Queensland</div>
+      <div class="header-top-row">
+        <div class="tag">South East Queensland</div>
+        <button id="theme-toggle" onclick="toggleTheme()" title="Switch theme">🌙</button>
+      </div>
       <h1>SEQ Bus<br><span>Tracker</span></h1>
       <p class="subtitle">Real-time arrivals powered by Translink GTFS-RT</p>
     </header>
