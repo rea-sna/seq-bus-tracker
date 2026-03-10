@@ -326,7 +326,12 @@ def search_stops(request: Request, q: str = ""):
     has_platform = "platform_code"  in stops_df.columns
     has_stopcode = "stop_code"      in stops_df.columns
 
-    mask   = stops_df["stop_name"].str.contains(q, case=False, na=False)
+    mask = (
+        stops_df["stop_name"].str.contains(q, case=False, na=False) |
+        stops_df["stop_id"].astype(str).str.contains(q, case=False, na=False)
+    )
+    if has_stopcode:
+        mask = mask | stops_df["stop_code"].astype(str).str.contains(q, case=False, na=False)
     matched = stops_df[mask].copy()
 
     results = []
