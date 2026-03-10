@@ -538,6 +538,7 @@ function renderArrivals(arrivals, showAll = false) {
 
   list.innerHTML = visible.map((a, i) => {
     const min = a.minutes_until;
+    const isTomorrow = a.day_offset === 1;
     const minClass = min <= 1 ? 'now' : min <= 5 ? 'soon' : 'later';
     const minText = min <= 1 ? 'Now' : `${min}`;
     const label = min <= 1 ? '' : 'min';
@@ -547,9 +548,7 @@ function renderArrivals(arrivals, showAll = false) {
     const bgColor = a.route_color || 'var(--accent2)';
     const textColor = a.route_text_color || '#ffffff';
 
-    const timeStr = min >= 10
-      ? new Date(a.arrival_time * 1000).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false })
-      : '';
+    const clockTime = new Date(a.arrival_time * 1000).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false });
 
     const delayMin = Math.round((a.delay_seconds || 0) / 60);
     const delayBadge = delayMin > 1
@@ -557,9 +556,16 @@ function renderArrivals(arrivals, showAll = false) {
       : delayMin < -1
         ? `<span class="delay-badge early">${delayMin}m</span>`
         : '';
-    const tomorrowBadge = a.day_offset === 1
+    const tomorrowBadge = isTomorrow
       ? `<span class="delay-badge tomorrow">Tomorrow</span>`
       : '';
+
+    const arrivalTimeHtml = isTomorrow
+      ? `<div class="minutes later">${clockTime}</div>
+         <div class="minutes-label">tomorrow</div>`
+      : `<div class="minutes ${minClass}">${minText}</div>
+         <div class="minutes-label">${label}</div>
+         ${min >= 10 ? `<div class="arrival-clock">${clockTime}</div>` : ''}`;
 
     return `
       <div class="arrival-card${active}" onclick="onCardClick(${i})" style="--route-color:${bgColor}">
@@ -574,9 +580,7 @@ function renderArrivals(arrivals, showAll = false) {
           ${sub ? `<div class="marquee-wrap route-long"><span class="marquee-inner">${escHtml(sub)}</span></div>` : ''}
         </div>
         <div class="arrival-time">
-          <div class="minutes ${minClass}">${minText}</div>
-          <div class="minutes-label">${label}</div>
-          ${timeStr ? `<div class="arrival-clock">${timeStr}</div>` : ''}
+          ${arrivalTimeHtml}
         </div>
       </div>`;
   }).join('');

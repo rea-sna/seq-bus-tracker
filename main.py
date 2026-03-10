@@ -115,10 +115,24 @@ try:
     else:
         shapes_dict = None
         print(f"✅ GTFS loaded — {len(stops_df)} stops, {len(bus_routes_df)} bus routes (no shapes.txt)")
+    # trip ごとの最終停留所を辞書化（終着駅フィルタ用）
+    last_stop_by_trip: dict = (
+        stop_times_df
+        .sort_values("stop_sequence")
+        .groupby("trip_id")["stop_id"]
+        .last()
+        .to_dict()
+    )
 except FileNotFoundError as e:
     print(f"⚠️  GTFS files not found: {e}")
     stops_df = bus_routes_df = bus_trips_df = stop_times_df = shapes_dict = None
     calendar_df = calendar_dates_df = None
+    last_stop_by_trip = {}
+
+# ── Timezone ──────────────────────────────────────────────────────────────────
+# ブリスベンは UTC+10 固定（サマータイムなし）
+import datetime as _dt
+BRISBANE_TZ = _dt.timezone(_dt.timedelta(hours=10))
 
 # ── Realtime endpoints ────────────────────────────────────────────────────────
 TRIP_UPDATES_URL = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates/Bus"
@@ -150,10 +164,11 @@ def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0):
         return []
 
     DAY_NAMES = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
-    target_date = datetime.date.today() + datetime.timedelta(days=day_offset)
+    target_date = datetime.datetime.now(BRISBANE_TZ).date() + datetime.timedelta(days=day_offset)
     target_str  = target_date.strftime("%Y%m%d")
     day_name    = DAY_NAMES[target_date.weekday()]
-    base_ts     = datetime.datetime(target_date.year, target_date.month, target_date.day).timestamp()
+    base_ts     = datetime.datetime(target_date.year, target_date.month, target_date.day,
+                                    tzinfo=BRISBANE_TZ).timestamp()
 
     # 運行サービスIDを取得
     active_service_ids = set()
@@ -220,6 +235,11 @@ def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0):
     ]
     route_meta = bus_routes_df[route_meta_cols].reset_index()
     st = st.merge(route_meta, on="route_id", how="left")
+    # 終着駅フィルタ: 表示中のバス停がそのトリップの最終停留所なら除外
+    if last_stop_by_trip:
+        last_stops = st["trip_id"].map(last_stop_by_trip)
+        st = st[last_stops != st["stop_id"]]
+
     st = st.sort_values("arr_ts").head(15)
 
     def _str(val, default=""):
@@ -493,6 +513,9 @@ def get_terminal_arrivals(request: Request, parent_id: str):
             trip_id = entity.trip_update.trip.trip_id
             if trip_id not in bus_trips_df.index:
                 continue
+            # 終着駅（このホームがトリップの最終停留所）はスキップ
+            if last_stop_by_trip.get(trip_id) == str(stu.stop_id):
+                continue
             trip_row = bus_trips_df.loc[trip_id]
 
             route_id = trip_row["route_id"]
@@ -578,6 +601,9 @@ def get_arrivals(request: Request, stop_id: str):
 
             # ルート情報を付加（インデックスで O(1) 参照）
             if trip_id not in bus_trips_df.index:
+                continue
+            # 終着駅（このバス停がトリップの最終停留所）はスキップ
+            if last_stop_by_trip.get(trip_id) == str(stop_id):
                 continue
             trip_row = bus_trips_df.loc[trip_id]
 
@@ -690,8 +716,8 @@ def get_trip_stops(request: Request, trip_id: str):
                 parts = static_time_str.split(":")
                 h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
                 import datetime
-                today = datetime.date.today()
-                base = datetime.datetime(today.year, today.month, today.day, 0, 0, 0)
+                today = datetime.datetime.now(BRISBANE_TZ).date()
+                base = datetime.datetime(today.year, today.month, today.day, tzinfo=BRISBANE_TZ)
                 static_unix = base.timestamp() + h*3600 + m*60 + s
                 passed = static_unix < now
             except Exception:

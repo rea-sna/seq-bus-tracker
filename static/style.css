@@ -759,6 +759,18 @@ footer {
   color: var(--muted);
 }
 
+.footer-text a {
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 1px solid var(--border);
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.footer-text a:hover {
+  color: var(--accent2);
+  border-color: var(--accent2);
+}
+
 .live-dot {
   display: inline-flex;
   align-items: center;
@@ -1200,7 +1212,7 @@ footer {
 
   /* フッター非表示 */
   footer {
-    display: none;
+    /* display: none; */
   }
 
   /* 右端が切れないようにカード幅を修正 */
