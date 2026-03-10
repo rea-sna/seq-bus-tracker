@@ -187,6 +187,7 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () 
 let stopMarker = null;
 let routeLayer = null;
 let stopDotLayer = null;
+let neonAnimationId = null;
 
 const stopIcon = L.divIcon({
   className: '',
@@ -203,6 +204,7 @@ function placeStopMarker(lat, lon, name) {
 }
 
 async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, platformStopId = null) {
+  neonAnimationId = null; // 実行中のアニメーションを停止
   if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
   if (stopDotLayer) { map.removeLayer(stopDotLayer); stopDotLayer = null; }
 
@@ -210,55 +212,98 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
   const lineColor = routeColor || '#0099ff';
   hint.innerHTML = `<span style="color:var(--muted)">Loading…</span>`;
 
-  // タイムラインは shape の有無に関わらず常に表示
-  renderTimeline(tripId, lineColor, platformStopId);
+  // shape と trip stops を並列取得（重複リクエストを排除）
+  const [shapeRes, stRes] = await Promise.all([
+    shapeId ? fetch(`${API}/api/shapes/${shapeId}`).catch(() => null) : Promise.resolve(null),
+    fetch(`${API}/api/trips/${tripId}/stops`).catch(() => null),
+  ]);
 
-  if (!shapeId) {
+  let stData = null;
+  if (stRes && stRes.ok) {
+    try { stData = await stRes.json(); } catch {}
+  }
+
+  // タイムラインは shape の有無に関わらず常に表示（データを渡して再利用）
+  renderTimeline(stData, lineColor, platformStopId);
+
+  if (!shapeId || !shapeRes || !shapeRes.ok) {
     hint.innerHTML = `<span style="color:var(--muted)">No shape data for this route</span>`;
     return;
   }
 
   try {
-    const res = await fetch(`${API}/api/shapes/${shapeId}`);
-    if (!res.ok) throw new Error();
-    const data = await res.json();
+    const data = await shapeRes.json();
 
-    routeLayer = L.polyline(
-      data.coords.map(c => [c[0], c[1]]),
-      { color: lineColor, weight: 4, opacity: 0.9, lineJoin: 'round' }
-    ).addTo(map);
+    const coords = data.coords.map(c => [c[0], c[1]]);
+    const glowOuter = L.polyline(coords, { color: lineColor, weight: 14, opacity: 0.10, lineJoin: 'round' });
+    const glowInner = L.polyline(coords, { color: lineColor, weight: 7,  opacity: 0.28, lineJoin: 'round' });
+    const coreLine  = L.polyline(coords, { color: lineColor, weight: 3,  opacity: 1.00, lineJoin: 'round' });
+    routeLayer = L.featureGroup([glowOuter, glowInner, coreLine]).addTo(map);
 
-    // バス停ドットを取得して描画
-    try {
-      const stRes = await fetch(`${API}/api/trips/${tripId}/stops`);
-      if (stRes.ok) {
-        const stData = await stRes.json();
-        if (stopDotLayer) map.removeLayer(stopDotLayer);
-        stopDotLayer = L.layerGroup();
+    // ネオントレースアニメーション（繰り返し）
+    const animToken = {};
+    neonAnimationId = animToken;
+    const neonLayers = [glowOuter, glowInner, coreLine];
 
-        stData.stops.forEach(s => {
-          const lat = parseFloat(s.stop_lat);
-          const lon = parseFloat(s.stop_lon);
-          if (isNaN(lat) || isNaN(lon)) return;
+    function runNeonCycle() {
+      if (neonAnimationId !== animToken) return; // ルート切替で無効化されたら停止
 
-          const isCurrentStop = s.stop_id === (platformStopId || currentStopId);
-          const dot = L.circleMarker([lat, lon], {
-            radius: isCurrentStop ? 7 : 4,
-            fillColor: isCurrentStop ? '#00e5a0' : '#ffffff',
-            color: isCurrentStop ? '#fff' : (lineColor || '#0099ff'),
-            weight: isCurrentStop ? 3 : 1.5,
-            opacity: 1,
-            fillOpacity: isCurrentStop ? 1 : 0.9,
-          }).bindTooltip(escHtml(s.stop_name), {
-            direction: 'top', offset: [0, -4],
-            className: 'stop-tooltip'
-          });
-          stopDotLayer.addLayer(dot);
+      // 始点にリセット
+      neonLayers.forEach(pl => {
+        const el = pl.getElement();
+        if (!el) return;
+        const len = el.getTotalLength();
+        el.style.transition = 'none';
+        el.style.strokeDasharray = `${len}`;
+        el.style.strokeDashoffset = `${len}`;
+      });
+
+      coreLine.getElement()?.getBoundingClientRect(); // force reflow
+
+      // 終点へアニメーション
+      neonLayers.forEach(pl => {
+        const el = pl.getElement();
+        if (!el) return;
+        el.style.transition = 'stroke-dashoffset 3s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+        el.style.strokeDashoffset = '0';
+      });
+
+      // 描画完了後、少し待って次のサイクルを開始
+      const coreEl = coreLine.getElement();
+      if (coreEl) {
+        coreEl.addEventListener('transitionend', function handler() {
+          coreEl.removeEventListener('transitionend', handler);
+          setTimeout(() => {
+            if (neonAnimationId === animToken) runNeonCycle();
+          }, 1000);
         });
-
-        stopDotLayer.addTo(map);
       }
-    } catch { /* ドット描画失敗は無視 */ }
+    }
+
+    // バス停ドットを描画（stData を再利用）
+    if (stData) {
+      stopDotLayer = L.layerGroup();
+      stData.stops.forEach(s => {
+        const lat = parseFloat(s.stop_lat);
+        const lon = parseFloat(s.stop_lon);
+        if (isNaN(lat) || isNaN(lon)) return;
+
+        const isCurrentStop = s.stop_id === (platformStopId || currentStopId);
+        const dot = L.circleMarker([lat, lon], {
+          radius: isCurrentStop ? 7 : 4,
+          fillColor: isCurrentStop ? '#00e5a0' : '#ffffff',
+          color: isCurrentStop ? '#fff' : (lineColor || '#0099ff'),
+          weight: isCurrentStop ? 3 : 1.5,
+          opacity: 1,
+          fillOpacity: isCurrentStop ? 1 : 0.9,
+        }).bindTooltip(escHtml(s.stop_name), {
+          direction: 'top', offset: [0, -4],
+          className: 'stop-tooltip'
+        });
+        stopDotLayer.addLayer(dot);
+      });
+      stopDotLayer.addTo(map);
+    }
 
     if (stopMarker) stopMarker.setZIndexOffset(1000);
 
@@ -269,6 +314,17 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
       map.fitBounds(bounds, { padding: [28, 28] });
     } catch { /* fitBounds失敗は無視 */ }
 
+    // fitBounds のズームアニメーション完了後にネオンアニメーション開始
+    // （アニメーション中にパス長が変わると途中から始まってしまうため）
+    let animStarted = false;
+    function startAnimOnce() {
+      if (animStarted || neonAnimationId !== animToken) return;
+      animStarted = true;
+      requestAnimationFrame(runNeonCycle);
+    }
+    map.once('moveend', startAnimOnce);
+    setTimeout(startAnimOnce, 400); // moveend が来ない場合のフォールバック
+
     hint.innerHTML = `<span class="map-route-label" style="background:${lineColor}">${escHtml(routeShort)}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(headsign)}</span>`;
 
   } catch (e) {
@@ -278,6 +334,7 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
 }
 
 function clearRoute() {
+  neonAnimationId = null;
   if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
   if (stopDotLayer) { map.removeLayer(stopDotLayer); stopDotLayer = null; }
   document.getElementById('map-hint').innerHTML = '← Select a bus to show its route';
@@ -603,13 +660,16 @@ function restartProgressBar() {
 }
 
 // ── Stop timeline ────────────────────────────────────────────────────────────
-async function renderTimeline(tripId, lineColor, stopId) {
+function renderTimeline(data, lineColor, stopId) {
   const tl = document.getElementById('stop-timeline');
 
+  if (!data) {
+    tl.style.display = 'block';
+    tl.innerHTML = `<div style="padding:12px 14px;font-size:12px;color:var(--muted);font-family:'Space Mono',monospace">Stop timeline unavailable</div>`;
+    return;
+  }
+
   try {
-    const res = await fetch(`${API}/api/trips/${tripId}/stops`);
-    if (!res.ok) throw new Error();
-    const data = await res.json();
     const stops = data.stops;
 
     // 選択中のバス停のインデックスを探す

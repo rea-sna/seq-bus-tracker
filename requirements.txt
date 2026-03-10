@@ -3,4 +3,5 @@ uvicorn[standard]
 requests
 gtfs-realtime-bindings
 pandas
+numpy
 slowapi
