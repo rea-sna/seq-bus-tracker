@@ -152,3 +152,9 @@ git push heroku main
 
 データ: Translink Open Data、[CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.ja) ライセンスの下で提供。
 帰属表示: © State of Queensland (Translink), 2024
+
+---
+
+## 開発について
+
+このアプリは [Claude Sonnet 4.6](https://www.anthropic.com/claude) (Anthropic) との対話を通じて開発されました。

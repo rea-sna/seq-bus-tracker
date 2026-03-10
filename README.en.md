@@ -152,3 +152,9 @@ Code: [MIT](https://opensource.org/licenses/MIT)
 
 Data: Translink Open Data, licensed under [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 Attribution: © State of Queensland (Translink), 2024
+
+---
+
+## Built with
+
+This app was developed in collaboration with [Claude Sonnet 4.6](https://www.anthropic.com/claude) (Anthropic).
