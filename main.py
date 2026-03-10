@@ -26,6 +26,7 @@ import requests
 import threading
 import time
 import os
+import gc
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 app = FastAPI(title="Translink Bus API")
@@ -62,24 +63,48 @@ def download_gtfs_if_needed():
 download_gtfs_if_needed()
 
 def load_gtfs():
-    stops   = pd.read_csv(f"{GTFS_DIR}/stops.txt",   dtype=str).fillna("")
-    routes  = pd.read_csv(f"{GTFS_DIR}/routes.txt",  dtype=str).fillna("")
-    trips   = pd.read_csv(f"{GTFS_DIR}/trips.txt",   dtype=str).fillna("")
+    # ── stops: 不要カラムを除外、lat/lon を float32 に変換 ──
+    stops = pd.read_csv(
+        f"{GTFS_DIR}/stops.txt",
+        dtype=str,
+        usecols=lambda c: c in ["stop_id", "stop_code", "stop_name", "stop_lat", "stop_lon",
+                                 "location_type", "parent_station", "platform_code"]
+    ).fillna("")
+    stops["stop_lat"] = pd.to_numeric(stops["stop_lat"], errors="coerce").astype("float32").fillna(0.0)
+    stops["stop_lon"] = pd.to_numeric(stops["stop_lon"], errors="coerce").astype("float32").fillna(0.0)
+    for col in ["location_type", "parent_station", "platform_code"]:
+        if col in stops.columns:
+            stops[col] = stops[col].astype("category")
+
+    routes = pd.read_csv(f"{GTFS_DIR}/routes.txt", dtype=str).fillna("")
+
+    # ── trips: direction_id / block_id は未使用なので除外 ──
+    trips = pd.read_csv(
+        f"{GTFS_DIR}/trips.txt",
+        dtype=str,
+        usecols=lambda c: c in ["route_id", "service_id", "trip_id", "trip_headsign", "shape_id"]
+    ).fillna("")
 
     # バスのみに絞る (route_type == "3")
     bus_routes = routes[routes["route_type"] == "3"].copy()
     bus_route_ids = set(bus_routes["route_id"])
     bus_trips = trips[trips["route_id"].isin(bus_route_ids)].copy()
+    for col in ["route_id", "service_id", "trip_headsign", "shape_id"]:
+        if col in bus_trips.columns:
+            bus_trips[col] = bus_trips[col].astype("category")
 
-    # stop_times は大きいので必要カラムだけ読む
-    # arrival_time / departure_time も読む（停車時刻表示用）
-    st_cols = ["trip_id", "stop_id", "stop_sequence", "arrival_time", "departure_time"]
+    # ── stop_times: 必要カラムのみ・バス便のみ・category 型で省メモリ化 ──
+    # arrival_time は 100% 存在するため departure_time は不要
+    bus_trip_ids_set = set(bus_trips["trip_id"])
     stop_times = pd.read_csv(
         f"{GTFS_DIR}/stop_times.txt",
-        dtype=str,
-        usecols=lambda c: c in st_cols
+        dtype={"trip_id": str, "stop_id": str, "arrival_time": str, "stop_sequence": "int16"},
+        usecols=["trip_id", "stop_id", "stop_sequence", "arrival_time"]
     ).fillna("")
-    stop_times["stop_sequence"] = stop_times["stop_sequence"].astype(int)
+    # バス以外の trip を除外してからカテゴリ化（エンコードを最小化）
+    stop_times = stop_times[stop_times["trip_id"].isin(bus_trip_ids_set)].copy()
+    for col in ["trip_id", "stop_id", "arrival_time"]:
+        stop_times[col] = stop_times[col].astype("category")
 
     # calendar.txt と calendar_dates.txt を読む（翌日便の補完用）
     calendar_df = None
@@ -94,6 +119,10 @@ def load_gtfs():
     bus_trips  = bus_trips.set_index("trip_id")
     bus_routes = bus_routes.set_index("route_id")
     return stops, bus_routes, bus_trips, stop_times, calendar_df, calendar_dates_df
+
+# ── 近傍バス停検索用 numpy 配列（起動時に初期化） ────────────────────────────
+_stops_lat_arr: np.ndarray = np.array([], dtype=np.float32)
+_stops_lon_arr: np.ndarray = np.array([], dtype=np.float32)
 
 try:
     stops_df, bus_routes_df, bus_trips_df, stop_times_df, calendar_df, calendar_dates_df = load_gtfs()
@@ -119,10 +148,20 @@ try:
     last_stop_by_trip: dict = (
         stop_times_df
         .sort_values("stop_sequence")
-        .groupby("trip_id")["stop_id"]
+        .groupby("trip_id", observed=True)["stop_id"]
         .last()
         .to_dict()
     )
+    # 近傍バス停検索用 numpy 配列を初期化
+    _stops_lat_arr = stops_df["stop_lat"].values  # float32
+    _stops_lon_arr = stops_df["stop_lon"].values  # float32
+    # ロード時の一時メモリを解放（Linux では malloc_trim でOSへ返却）
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
 except FileNotFoundError as e:
     print(f"⚠️  GTFS files not found: {e}")
     stops_df = bus_routes_df = bus_trips_df = stop_times_df = shapes_dict = None
@@ -241,7 +280,8 @@ def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0):
         return []
 
     # ── ベクトル化: 時刻文字列を unix タイムスタンプに変換 ──
-    time_col = st["arrival_time"].where(st["arrival_time"] != "", st["departure_time"])
+    # arrival_time は 100% 存在するため departure_time フォールバック不要
+    time_col = st["arrival_time"]
     st = st[time_col != ""].copy()
     if st.empty:
         return []
@@ -409,38 +449,35 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
     if stops_df is None:
         raise HTTPException(503, "GTFS data not loaded")
 
-    import math
+    # ── ベクトル化: 全バス停との距離を numpy で一括計算 ──
+    p = np.pi / 180.0
+    R = 6371000.0
+    dlat = (_stops_lat_arr - lat) * p
+    dlon = (_stops_lon_arr - lon) * p
+    a = (np.sin(dlat / 2.0) ** 2
+         + np.cos(lat * p) * np.cos(_stops_lat_arr * p) * np.sin(dlon / 2.0) ** 2)
+    all_dists = 2.0 * R * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
 
-    def haversine(lat1, lon1, lat2, lon2):
-        R = 6371000
-        p = math.pi / 180
-        a = (math.sin((lat2-lat1)*p/2)**2 +
-             math.cos(lat1*p) * math.cos(lat2*p) *
-             math.sin((lon2-lon1)*p/2)**2)
-        return 2 * R * math.asin(math.sqrt(a))
+    # stop_id → 距離 マップ（親駅の距離参照用）
+    sid_to_dist = dict(zip(stops_df["stop_id"].values, all_dists))
 
     has_parent   = "parent_station" in stops_df.columns
     has_loc_type = "location_type"  in stops_df.columns
     has_platform = "platform_code"  in stops_df.columns
     has_stopcode = "stop_code"      in stops_df.columns
 
+    # 親駅(location_type=1)を除外し、半径内の候補に絞る
+    if has_loc_type:
+        not_parent_mask = (stops_df["location_type"] != "1").values
+    else:
+        not_parent_mask = np.ones(len(stops_df), dtype=bool)
+    within_radius_mask = all_dists <= radius
+    candidate_df = stops_df[not_parent_mask & within_radius_mask]
+
     results = []
     seen_parents = set()
 
-    for _, row in stops_df.iterrows():
-        loc = row.get("location_type", "") if has_loc_type else ""
-        if loc == "1":
-            continue
-        try:
-            slat = float(row["stop_lat"])
-            slon = float(row["stop_lon"])
-        except (ValueError, TypeError):
-            continue
-
-        dist = haversine(lat, lon, slat, slon)
-        if dist > radius:
-            continue
-
+    for _, row in candidate_df.iterrows():
         parent = row.get("parent_station", "") if has_parent else ""
         if parent:
             if parent in seen_parents:
@@ -448,31 +485,33 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
             seen_parents.add(parent)
             parent_row = stops_df[stops_df["stop_id"] == parent]
             if not parent_row.empty:
-                station_name = parent_row.iloc[0]["stop_name"]
-                station_lat  = parent_row.iloc[0]["stop_lat"]
-                station_lon  = parent_row.iloc[0]["stop_lon"]
-                dist = haversine(lat, lon, float(station_lat), float(station_lon))
+                station_name = str(parent_row.iloc[0]["stop_name"])
+                station_lat  = float(parent_row.iloc[0]["stop_lat"])
+                station_lon  = float(parent_row.iloc[0]["stop_lon"])
             else:
-                station_name = row["stop_name"]
-                station_lat  = slat
-                station_lon  = slon
+                station_name = str(row["stop_name"])
+                station_lat  = float(row["stop_lat"])
+                station_lon  = float(row["stop_lon"])
+            # 親駅 stop_id の距離を使用（なければ子駅の距離で代替）
+            dist = float(sid_to_dist.get(str(parent),
+                         sid_to_dist.get(str(row["stop_id"]), 0.0)))
 
             siblings = stops_df[stops_df["parent_station"] == parent]
             platforms = []
             for _, sib in siblings.iterrows():
-                if sib.get("location_type", "") == "1":
+                if str(sib.get("location_type", "")) == "1":
                     continue
                 pf = sib.get("platform_code", "") if has_platform else ""
                 sc = sib.get("stop_code",     "") if has_stopcode else ""
                 platforms.append({
-                    "stop_id":       sib["stop_id"],
-                    "stop_name":     sib["stop_name"],
-                    "stop_lat":      sib["stop_lat"],
-                    "stop_lon":      sib["stop_lon"],
-                    "platform_code": pf or sc,
+                    "stop_id":       str(sib["stop_id"]),
+                    "stop_name":     str(sib["stop_name"]),
+                    "stop_lat":      float(sib["stop_lat"]),
+                    "stop_lon":      float(sib["stop_lon"]),
+                    "platform_code": str(pf or sc),
                 })
             results.append({
-                "stop_id":     parent,
+                "stop_id":     str(parent),
                 "stop_name":   station_name,
                 "stop_lat":    station_lat,
                 "stop_lon":    station_lon,
@@ -483,13 +522,13 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
         else:
             sc = row.get("stop_code", "") if has_stopcode else ""
             results.append({
-                "stop_id":     row["stop_id"],
-                "stop_name":   row["stop_name"],
-                "stop_lat":    slat,
-                "stop_lon":    slon,
+                "stop_id":     str(row["stop_id"]),
+                "stop_name":   str(row["stop_name"]),
+                "stop_lat":    float(row["stop_lat"]),
+                "stop_lon":    float(row["stop_lon"]),
                 "is_terminal": False,
                 "platforms":   [],
-                "distance_m":  round(dist),
+                "distance_m":  round(float(sid_to_dist.get(str(row["stop_id"]), 0.0))),
             })
 
     results.sort(key=lambda x: x["distance_m"])
@@ -741,7 +780,7 @@ def get_trip_stops(request: Request, trip_id: str):
     stops_list = []
     for _, row in merged.iterrows():
         sid = str(row["stop_id"])
-        static_time_str = row.get("arrival_time", row.get("departure_time", ""))             if "arrival_time" in merged.columns else ""
+        static_time_str = row.get("arrival_time", "") if "arrival_time" in merged.columns else ""
 
         # リアルタイム予測があればそちらを優先
         rt_unix = rt_times.get(sid)

@@ -722,7 +722,7 @@ h1 span {
   border-radius: 2px;
   width: 100%;
   transform-origin: left;
-  animation: countdown 30s linear forwards;
+  animation: countdown var(--refresh-duration, 30s) linear forwards;
 }
 
 /* ── Stop tooltip ── */

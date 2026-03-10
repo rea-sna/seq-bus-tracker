@@ -503,10 +503,15 @@ async function fetchArrivals(stopId) {
     // 翌日便が含まれる場合は自動更新を停止
     const hasTomorrow = lastArrivals.some(a => a.day_offset === 1);
     if (hasTomorrow && autoRefreshEnabled) {
-      clearInterval(refreshTimer);
+      clearTimeout(refreshTimer);
       document.getElementById('refresh-bar').classList.remove('visible');
       document.getElementById('auto-refresh-toggle').classList.remove('active');
       autoRefreshEnabled = false;
+    }
+
+    // 更新間隔を再評価してスケジュール（翌日便チェック後）
+    if (autoRefreshEnabled && currentStopId) {
+      scheduleNextRefresh(currentStopId);
     }
 
     if (activeCardIndex !== null && lastArrivals[activeCardIndex]) {
@@ -642,11 +647,32 @@ function onCardClick(index) {
 }
 
 // ── Auto-refresh ─────────────────────────────────────────────────────────────
-function startAutoRefresh(stopId) {
-  clearInterval(refreshTimer);
+function getRefreshInterval(arrivals) {
+  if (!arrivals || arrivals.length === 0) return 30000;
+  const nextMinutes = arrivals[0].minutes_until ?? 0;
+  if (nextMinutes >= 300) return null;   // オフ
+  if (nextMinutes >= 100) return 600000; // 10分
+  if (nextMinutes >= 10)  return 60000;  // 1分
+  return 30000;                          // 30秒
+}
+
+function scheduleNextRefresh(stopId) {
+  clearTimeout(refreshTimer);
   if (!autoRefreshEnabled) return;
-  restartProgressBar();
-  refreshTimer = setInterval(() => { fetchArrivals(stopId); restartProgressBar(); }, 30000);
+  const interval = getRefreshInterval(lastArrivals);
+  if (interval === null) {
+    // 300分以上: 自動更新をオフ
+    autoRefreshEnabled = false;
+    document.getElementById('refresh-bar').classList.remove('visible');
+    document.getElementById('auto-refresh-toggle').classList.remove('active');
+    return;
+  }
+  restartProgressBar(interval / 1000);
+  refreshTimer = setTimeout(() => { fetchArrivals(stopId); }, interval);
+}
+
+function startAutoRefresh(stopId) {
+  scheduleNextRefresh(stopId);
 }
 
 function toggleAutoRefresh() {
@@ -655,18 +681,19 @@ function toggleAutoRefresh() {
   btn.classList.toggle('active', autoRefreshEnabled);
   const bar = document.getElementById('refresh-bar');
   if (autoRefreshEnabled) {
-    if (currentStopId) startAutoRefresh(currentStopId);
+    if (currentStopId) scheduleNextRefresh(currentStopId);
   } else {
-    clearInterval(refreshTimer);
+    clearTimeout(refreshTimer);
     bar.classList.remove('visible');
   }
 }
 
-function restartProgressBar() {
+function restartProgressBar(durationSec = 30) {
   const bar = document.getElementById('refresh-bar');
   const fill = document.getElementById('refresh-bar-fill');
   bar.classList.add('visible');
   const newFill = fill.cloneNode(true);
+  newFill.style.setProperty('--refresh-duration', `${durationSec}s`);
   fill.parentNode.replaceChild(newFill, fill);
 }
 
@@ -917,7 +944,7 @@ function onInactivityTimeout() {
   if (!autoRefreshEnabled) return;
   // 自動更新をオフ
   autoRefreshEnabled = false;
-  clearInterval(refreshTimer);
+  clearTimeout(refreshTimer);
   const btn = document.getElementById('auto-refresh-toggle');
   if (btn) btn.classList.remove('active');
   document.getElementById('refresh-bar').classList.remove('visible');
