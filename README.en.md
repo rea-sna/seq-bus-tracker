@@ -9,14 +9,17 @@ Real-time bus arrival information for South East Queensland, powered by Translin
 ## Features
 
 - Real-time arrivals with delay / early badges
-- Stop search by name and GPS-based nearby stop discovery
+- Stop search by name or stop number (stop_code)
+- GPS-based nearby stop discovery
 - Interactive route map with neon trace animation
 - Stop timeline showing upcoming and passed stops
 - Terminal/interchange support (multi-platform stops)
-- Favourites for quick access to frequently used stops
+- Service alerts from SEQ GTFS-RT feed
+- Favourites for quick access to frequently used stops (localStorage)
 - Auto-refresh every 30 seconds
 - Static timetable fallback when real-time data is unavailable (including next-day buses)
-- Mobile responsive, dark theme
+- Light / dark map tiles following OS colour scheme
+- Mobile responsive
 
 ---
 
@@ -104,6 +107,7 @@ Open `http://localhost:8000` in your browser.
 | GET | `/api/terminal/{parent_id}/arrivals` | Arrivals across all platforms of a terminal | 30/min |
 | GET | `/api/shapes/{shape_id:path}` | Route shape coordinates | 30/min |
 | GET | `/api/trips/{trip_id:path}/stops` | All stops for a trip with real-time predictions | 30/min |
+| GET | `/api/alerts` | Active service alerts | 20/min |
 
 Rate limiting is IP-based via [slowapi](https://github.com/laurentS/slowapi). Global default: 200 requests/minute.
 
