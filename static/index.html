@@ -26,14 +26,17 @@
     <header>
       <div class="header-top-row">
         <div class="tag">South East Queensland</div>
-        <button id="theme-toggle" onclick="toggleTheme()" title="Switch theme">🌙</button>
+        <div class="header-btn-group">
+          <button id="theme-toggle" onclick="toggleTheme()" title="Switch theme">🌙</button>
+          <button id="lang-toggle" onclick="toggleLang()" title="Switch language">🌐 <span id="lang-label">日本語</span></button>
+        </div>
       </div>
       <h1>SEQ Bus<br><span>Tracker</span></h1>
-      <p class="subtitle">Real-time arrivals powered by Translink GTFS-RT</p>
+      <p class="subtitle" data-i18n="subtitle">Real-time arrivals powered by Translink GTFS-RT</p>
     </header>
 
     <div id="favorites-section" style="display:none;margin-bottom:16px;">
-      <div class="section-label">Favorites</div>
+      <div class="section-label" data-i18n="sectionFavorites">Favorites</div>
       <div id="favorites-list"></div>
     </div>
 
@@ -50,15 +53,15 @@
       <button id="alert-btn" onclick="openAlertPanel()" title="Service Alerts">
         <span class="alert-bell-icon">🔔</span>
         <span id="alert-count-badge" class="alert-count-badge"></span>
-        <span class="alert-btn-label">Service Alerts</span>
+        <span class="alert-btn-label" data-i18n="alertBtnLabel">Service Alerts</span>
       </button>
     </div>
 
     <div class="error-msg" id="error-msg"></div>
 
     <div id="inactivity-notice">
-      <span>Auto-refresh paused after 30 min of inactivity.</span>
-      <button class="inactivity-resume" onclick="resumeFromInactivity()">Resume</button>
+      <span data-i18n="inactivityMsg">Auto-refresh paused after 30 min of inactivity.</span>
+      <button class="inactivity-resume" onclick="resumeFromInactivity()" data-i18n="inactivityResume">Resume</button>
     </div>
 
     <div id="stop-header">
@@ -72,10 +75,10 @@
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
           <button class="fav-btn" id="fav-btn" onclick="toggleFavorite()" title="Add to favorites">☆</button>
-          <button class="refresh-btn" id="refresh-btn" onclick="refreshArrivals()">↺ Refresh</button>
+          <button class="refresh-btn" id="refresh-btn" onclick="refreshArrivals()" data-i18n="refreshBtnLabel">↺ Refresh</button>
           <button class="toggle-btn active" id="auto-refresh-toggle" onclick="toggleAutoRefresh()">
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
-            <span class="toggle-label">Auto</span>
+            <span class="toggle-label" data-i18n="autoLabel">Auto</span>
           </button>
         </div>
       </div>
@@ -87,16 +90,18 @@
 
     <div id="main-panel">
       <div id="arrivals-col">
-        <div class="section-label">Next buses</div>
+        <div class="section-label" data-i18n="sectionNextBuses">Next buses</div>
+        <div id="arrivals-filter-bar" style="display:none;"></div>
         <div id="arrivals-list"></div>
       </div>
       <div id="map-col">
         <div id="map-col-inner">
-          <div class="section-label">Route map</div>
+          <div class="section-label" data-i18n="sectionRouteMap">Route map</div>
           <div id="map-wrap">
             <div id="map"></div>
             <div class="map-hint" id="map-hint">← Select a bus to show its route</div>
           </div>
+          <div id="vehicle-panel" style="display:none;"></div>
           <div id="stop-timeline" style="display:none;margin-top:12px;"></div>
         </div>
       </div>
@@ -116,7 +121,7 @@
     <div class="alert-panel-header">
       <div class="alert-panel-title">
         <span class="alert-bell-icon">🔔</span>
-        Service Alerts
+        <span data-i18n="alertPanelTitle">Service Alerts</span>
       </div>
       <button class="alert-panel-close" onclick="closeAlertPanel()">×</button>
     </div>

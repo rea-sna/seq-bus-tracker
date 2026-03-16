@@ -14,7 +14,162 @@ let currentStopLat = null;
 let currentStopLon = null;
 let refreshTimer = null;
 let activeCardIndex = null;
+let activeArrivalTripId = null;
 let showAllArrivals = false;
+let activeArrivalFilter = { platform: null, direction: null, route: null };
+let currentIsNameGrouped = false;
+let currentGroupedStopIds = [];
+const nameGroupedStopMap = {};  // stop_id -> stop_ids[] for name-grouped stops
+let stopDirectionMap = {};       // stop_id -> '0' or '1' (majority direction)
+
+// ── i18n ─────────────────────────────────────────────────────────────────────
+const LANG_KEY = 'seq_lang';
+let currentLang = localStorage.getItem(LANG_KEY) || 'en';
+
+const STRINGS = {
+  en: {
+    searchPlaceholder: 'Search for a bus stop…',
+    nearbyPlaceholder: 'Nearby stops ↓',
+    noStopsFound: 'No stops found',
+    fetchingData: 'Fetching real-time data…',
+    noUpcomingBuses: 'No upcoming buses found.',
+    serviceEnded: "Today's service has ended",
+    filterPlatform: 'Platform',
+    filterDirection: 'Direction',
+    filterRoute: 'Route',
+    outbound: 'Outbound',
+    inbound: 'Inbound',
+    dirEnded: 'Ended',
+    timelinePassed: 'Passed',
+    timelineUpcoming: 'Upcoming',
+    timelineUnavailable: 'Stop timeline unavailable',
+    mapHint: '← Select a bus to show its route',
+    mapLoading: 'Loading…',
+    mapNoShape: 'No shape data for this route',
+    mapShapeUnavailable: 'Route shape unavailable',
+    gpsYouAreHere: 'You are here',
+    gpsNoStops: 'No bus stops found nearby.',
+    gpsFetchError: 'Could not fetch nearby stops.',
+    gpsAccessDenied: 'Location access denied. Please allow location in your browser.',
+    gpsError: 'Could not get your location. Please try again.',
+    serverError: 'Could not reach the server. Is FastAPI running?',
+    fetchError: 'Could not fetch arrival data. Please try again.',
+    tomorrow: 'Tomorrow',
+    showMore: n => `＋ Show all ${n} more`,
+    nPlatforms: n => `${n} platforms`,
+    nStops: n => `${n} stops`,
+    alertNone: 'No active service alerts.',
+    alertNoneFor: r => `No alerts for ${r}.`,
+    inactivityMsg: 'Auto-refresh paused after 30 min of inactivity.',
+    inactivityResume: 'Resume',
+    sectionFavorites: 'Favorites',
+    sectionNextBuses: 'Next buses',
+    sectionRouteMap: 'Route map',
+    subtitle: 'Real-time arrivals powered by Translink GTFS-RT',
+    alertPanelTitle: 'Service Alerts',
+    alertBtnLabel: 'Service Alerts',
+    autoLabel: 'Auto',
+    refreshBtnLabel: '↺ Refresh',
+    now: 'Now',
+    minLabel: 'min',
+    platLabel: 'Plat',
+    vehicleLive: 'Live position',
+    vehicleSecsAgo: s => `${s}s ago`,
+    vehicleMinAgo: m => `${m}min ago`,
+    vehicleNoPos: 'No live position available',
+    vehicleStopsAway: n => n === 1 ? `1 stop away` : `${n} stops away`,
+    vehicleAtStop: 'At this stop',
+    vehiclePassed: 'Passed this stop',
+    vehicleCurrentStop: stop => `At: ${stop}`,
+  },
+  ja: {
+    searchPlaceholder: 'バス停を検索…',
+    nearbyPlaceholder: '近くのバス停 ↓',
+    noStopsFound: 'バス停が見つかりません',
+    fetchingData: 'リアルタイムデータ取得中…',
+    noUpcomingBuses: '次のバスは見つかりません',
+    serviceEnded: '今日のバスは終了しました',
+    filterPlatform: 'のりば',
+    filterDirection: '方向',
+    filterRoute: '路線',
+    outbound: '下り',
+    inbound: '上り',
+    dirEnded: '終了',
+    timelinePassed: '通過済み',
+    timelineUpcoming: 'これから',
+    timelineUnavailable: '停車駅情報を表示できません',
+    mapHint: '← バスを選択するとルートを表示',
+    mapLoading: '読み込み中…',
+    mapNoShape: 'この路線のルートデータがありません',
+    mapShapeUnavailable: 'ルートを表示できません',
+    gpsYouAreHere: '現在地',
+    gpsNoStops: '近くにバス停が見つかりません',
+    gpsFetchError: '近くのバス停を取得できませんでした',
+    gpsAccessDenied: '位置情報へのアクセスが拒否されました。ブラウザの設定を確認してください。',
+    gpsError: '位置情報を取得できませんでした。もう一度お試しください。',
+    serverError: 'サーバーに接続できません',
+    fetchError: '到着情報を取得できませんでした。もう一度お試しください。',
+    tomorrow: '明日',
+    showMore: n => `＋ さらに${n}件表示`,
+    nPlatforms: n => `${n} のりば`,
+    nStops: n => `${n} バス停`,
+    alertNone: '現在アクティブなアラートはありません',
+    alertNoneFor: r => `${r} のアラートはありません`,
+    inactivityMsg: '30分間操作がなかったため、自動更新を停止しました。',
+    inactivityResume: '再開',
+    sectionFavorites: 'お気に入り',
+    sectionNextBuses: '次のバス',
+    sectionRouteMap: 'ルートマップ',
+    subtitle: 'Translinkリアルタイム情報',
+    alertPanelTitle: 'サービス情報',
+    alertBtnLabel: 'サービス情報',
+    autoLabel: '自動',
+    refreshBtnLabel: '↺ 更新',
+    now: 'まもなく',
+    minLabel: '分',
+    platLabel: 'のりば',
+    vehicleLive: 'リアルタイム位置',
+    vehicleSecsAgo: s => `${s}秒前`,
+    vehicleMinAgo: m => `${m}分前`,
+    vehicleNoPos: '位置情報なし',
+    vehicleStopsAway: n => `あと${n}駅`,
+    vehicleAtStop: '停車中',
+    vehiclePassed: '通過済み',
+    vehicleCurrentStop: stop => `現在地: ${stop}`,
+  }
+};
+
+function t(key, ...args) {
+  const s = STRINGS[currentLang]?.[key] ?? STRINGS.en[key];
+  if (typeof s === 'function') return s(...args);
+  return s ?? key;
+}
+
+function applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = t(el.getAttribute('data-i18n'));
+  });
+  const si = document.getElementById('search-input');
+  if (si && !si.value) si.placeholder = t('searchPlaceholder');
+  const langLabel = document.getElementById('lang-label');
+  if (langLabel) langLabel.textContent = currentLang === 'en' ? '日本語' : 'English';
+}
+
+function toggleLang() {
+  currentLang = currentLang === 'en' ? 'ja' : 'en';
+  localStorage.setItem(LANG_KEY, currentLang);
+  applyI18n();
+  if (currentStopId) {
+    renderFilterBar();
+    renderArrivals(getFilteredArrivals(), showAllArrivals);
+  }
+  renderFavorites();
+  // Update map hint if showing default
+  const hint = document.getElementById('map-hint');
+  if (hint && (hint.innerHTML.includes('Select a bus') || hint.innerHTML.includes('バスを選択'))) {
+    hint.innerHTML = t('mapHint');
+  }
+}
 
 // ── Favorites ────────────────────────────────────────────────────────────────
 // { stop_id, stop_name, stop_lat, stop_lon, is_terminal }
@@ -109,6 +264,7 @@ function toggleFavorite() {
       stop_lat: currentStopLat,
       stop_lon: currentStopLon,
       is_terminal: currentIsTerminal,
+      stop_ids: currentIsNameGrouped ? currentGroupedStopIds : [],
     });
   }
   saveFavorites(favs);
@@ -128,6 +284,13 @@ function renderFavorites() {
   const favs = loadFavorites();
   const section = document.getElementById('favorites-section');
   const list = document.getElementById('favorites-list');
+
+  // Pre-populate nameGroupedStopMap for name-grouped favorites
+  favs.forEach(f => {
+    if (f.stop_ids && f.stop_ids.length > 1) {
+      nameGroupedStopMap[f.stop_id] = f.stop_ids;
+    }
+  });
 
   if (!favs.length) {
     section.style.display = 'none';
@@ -224,6 +387,10 @@ let stopMarker = null;
 let routeLayer = null;
 let stopDotLayer = null;
 let neonAnimationId = null;
+let vehicleMarker = null;
+let vehicleRefreshTimer = null;
+let currentTripStops = null;
+let currentVehicleTargetStopId = null;
 
 const stopIcon = L.divIcon({
   className: '',
@@ -246,7 +413,7 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
 
   const hint = document.getElementById('map-hint');
   const lineColor = resolveRouteColor(routeShort, routeColor) || '#0099ff';
-  hint.innerHTML = `<span style="color:var(--muted)">Loading…</span>`;
+  hint.innerHTML = `<span style="color:var(--muted)">${t('mapLoading')}</span>`;
 
   // shape と trip stops を並列取得（重複リクエストを排除）
   const [shapeRes, stRes] = await Promise.all([
@@ -259,11 +426,15 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
     try { stData = await stRes.json(); } catch { }
   }
 
+  currentTripStops = stData;
+  currentVehicleTargetStopId = platformStopId || currentStopId;
+  startVehicleTracking(tripId, lineColor);
+
   // タイムラインは shape の有無に関わらず常に表示（データを渡して再利用）
   renderTimeline(stData, lineColor, platformStopId);
 
   if (!shapeId || !shapeRes || !shapeRes.ok) {
-    hint.innerHTML = `<span style="color:var(--muted)">No shape data for this route</span>`;
+    hint.innerHTML = `<span style="color:var(--muted)">${t('mapNoShape')}</span>`;
     return;
   }
 
@@ -365,7 +536,7 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
 
   } catch (e) {
     console.error('showRoute error:', e);
-    hint.innerHTML = `<span style="color:var(--muted)">Route shape unavailable</span>`;
+    hint.innerHTML = `<span style="color:var(--muted)">${t('mapShapeUnavailable')}</span>`;
   }
 }
 
@@ -373,11 +544,131 @@ function clearRoute() {
   neonAnimationId = null;
   if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
   if (stopDotLayer) { map.removeLayer(stopDotLayer); stopDotLayer = null; }
-  document.getElementById('map-hint').innerHTML = '← Select a bus to show its route';
+  document.getElementById('map-hint').innerHTML = t('mapHint');
   const tl = document.getElementById('stop-timeline');
   tl.style.display = 'none';
   tl.innerHTML = '';
+  stopVehicleTracking();
+  currentTripStops = null;
+  currentVehicleTargetStopId = null;
   if (currentStopLat) map.setView([currentStopLat, currentStopLon], 12);
+}
+
+// ── Vehicle tracking ─────────────────────────────────────────────────────────
+function makeVehicleIcon(bearing, color) {
+  const c = color || '#0099ff';
+  return L.divIcon({
+    className: '',
+    html: `<div class="vehicle-marker">
+      <svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="14" cy="14" r="12" fill="${c}" stroke="#fff" stroke-width="2"/>
+      </svg>
+      <span class="vehicle-marker-emoji">🚌</span>
+    </div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+  });
+}
+
+function calcStopsAway(pos) {
+  if (!currentTripStops || !currentTripStops.stops) return null;
+  const stops = currentTripStops.stops;
+  const targetId = currentVehicleTargetStopId ? String(currentVehicleTargetStopId) : null;
+  const vehicleStopId = pos.current_stop_id ? String(pos.current_stop_id) : null;
+  const targetIdx = targetId ? stops.findIndex(s => String(s.stop_id) === targetId) : -1;
+  if (targetIdx === -1) return null;
+
+  // current_status: 0=INCOMING_AT, 1=STOPPED_AT, 2=IN_TRANSIT_TO
+  // current_stop_id points to the stop the vehicle is at or heading toward
+  if (!vehicleStopId) return null;
+  const vehicleIdx = stops.findIndex(s => String(s.stop_id) === vehicleStopId);
+  if (vehicleIdx === -1) return null;
+
+  const diff = targetIdx - vehicleIdx;
+  if (diff < 0) return { passed: true };
+  if (diff === 0) return { atStop: true };
+  const vehicleStop = stops[vehicleIdx];
+  const intermediateStops = stops.slice(vehicleIdx + 1, targetIdx + 1);
+  return { stopsAway: diff, vehicleStop, intermediateStops };
+}
+
+function updateVehiclePanel(pos, lineColor) {
+  const panel = document.getElementById('vehicle-panel');
+  if (!panel) return;
+  if (!pos) {
+    panel.style.display = 'none';
+    return;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const delta = pos.timestamp ? now - pos.timestamp : null;
+  let agoStr = '';
+  if (delta !== null) {
+    agoStr = delta < 60 ? ` · ${t('vehicleSecsAgo', delta)}` : ` · ${t('vehicleMinAgo', Math.floor(delta / 60))}`;
+  }
+  const color = lineColor || 'var(--accent2)';
+  const proximity = calcStopsAway(pos);
+  let proximityStr = '';
+  let currentStopHtml = '';
+
+  if (proximity) {
+    if (proximity.passed) {
+      proximityStr = `<span class="vehicle-proximity-badge">${t('vehiclePassed')}</span>`;
+    } else if (proximity.atStop) {
+      proximityStr = `<span class="vehicle-proximity-badge vehicle-proximity-at" style="color:${color};border-color:${color}">${t('vehicleAtStop')}</span>`;
+    } else {
+      proximityStr = `<span class="vehicle-proximity-badge vehicle-proximity-away" style="color:${color};border-color:${color}">${t('vehicleStopsAway', proximity.stopsAway)}</span>`;
+      if (proximity.vehicleStop) {
+        currentStopHtml = `<div class="vehicle-current-stop">🚌 ${escHtml(t('vehicleCurrentStop', proximity.vehicleStop.stop_name))}</div>`;
+      }
+    }
+  }
+
+  panel.style.display = 'flex';
+  panel.innerHTML = `
+    <div class="vehicle-header">
+      <div class="vehicle-header-left">
+        <span class="vehicle-live-dot"></span>
+        <span>${t('vehicleLive')}${agoStr}</span>
+      </div>
+      ${proximityStr}
+    </div>
+    ${currentStopHtml}`;
+}
+
+async function updateVehicleMarker(tripId, lineColor) {
+  try {
+    const res = await fetch(`${API}/api/trips/${tripId}/vehicle`);
+    const pos = res.ok ? await res.json() : null;
+    if (!pos) {
+      if (vehicleMarker) { map.removeLayer(vehicleMarker); vehicleMarker = null; }
+      updateVehiclePanel(null);
+      return;
+    }
+    const icon = makeVehicleIcon(pos.bearing, lineColor);
+    if (vehicleMarker) {
+      vehicleMarker.setLatLng([pos.lat, pos.lon]);
+      vehicleMarker.setIcon(icon);
+    } else {
+      vehicleMarker = L.marker([pos.lat, pos.lon], { icon, zIndexOffset: 900 })
+        .addTo(map)
+        .bindTooltip(t('vehicleLive'), { direction: 'top', offset: [0, -6], className: 'stop-tooltip' });
+    }
+    updateVehiclePanel(pos, lineColor);
+  } catch {
+    updateVehiclePanel(null);
+  }
+}
+
+function startVehicleTracking(tripId, lineColor) {
+  stopVehicleTracking();
+  updateVehicleMarker(tripId, lineColor);
+  vehicleRefreshTimer = setInterval(() => updateVehicleMarker(tripId, lineColor), 15000);
+}
+
+function stopVehicleTracking() {
+  if (vehicleRefreshTimer) { clearInterval(vehicleRefreshTimer); vehicleRefreshTimer = null; }
+  if (vehicleMarker) { map.removeLayer(vehicleMarker); vehicleMarker = null; }
+  updateVehiclePanel(null);
 }
 
 // ── GPS / Nearby stops ───────────────────────────────────────────────────────
@@ -402,7 +693,7 @@ async function findNearbyStops() {
       gpsMarker = L.circleMarker([lat, lon], {
         radius: 8, fillColor: '#0099ff', color: '#fff',
         weight: 2, opacity: 1, fillOpacity: 0.9,
-      }).addTo(map).bindPopup('You are here');
+      }).addTo(map).bindPopup(t('gpsYouAreHere'));
       map.setView([lat, lon], 15);
       document.getElementById('main-panel').classList.add('visible');
       setTimeout(() => map.invalidateSize(), 50);
@@ -411,7 +702,7 @@ async function findNearbyStops() {
         const res = await fetch(`${API}/api/stops/nearby?lat=${lat}&lon=${lon}&radius=600`);
         const stops = await res.json();
         if (!stops.length) {
-          showError('No bus stops found nearby.');
+          showError(t('gpsNoStops'));
           btn.classList.remove('loading');
           btn.querySelector('#gps-icon').textContent = '◎';
           return;
@@ -420,9 +711,9 @@ async function findNearbyStops() {
         renderStopList(stops, true);
         stopList.classList.add('visible');
         searchInput.value = '';
-        searchInput.placeholder = 'Nearby stops ↓';
+        searchInput.placeholder = t('nearbyPlaceholder');
       } catch {
-        showError('Could not fetch nearby stops.');
+        showError(t('gpsFetchError'));
       }
 
       btn.classList.remove('loading');
@@ -432,8 +723,8 @@ async function findNearbyStops() {
     (err) => {
       btn.classList.remove('loading');
       btn.querySelector('#gps-icon').textContent = '◎';
-      if (err.code === 1) showError('Location access denied. Please allow location in your browser.');
-      else showError('Could not get your location. Please try again.');
+      if (err.code === 1) showError(t('gpsAccessDenied'));
+      else showError(t('gpsError'));
     },
     { enableHighAccuracy: true, timeout: 10000 }
   );
@@ -455,21 +746,28 @@ async function fetchStops(q) {
   try {
     const res = await fetch(`${API}/api/stops/search?q=${encodeURIComponent(q)}`);
     renderStopList(await res.json());
-  } catch { showError('Could not reach the server. Is FastAPI running?'); }
+  } catch { showError(t('serverError')); }
 }
 
 function renderStopList(stops, showDistance = false) {
   if (!stops.length) {
-    stopList.innerHTML = '<div class="stop-item"><span style="color:var(--muted);font-size:13px">No stops found</span></div>';
+    stopList.innerHTML = `<div class="stop-item"><span style="color:var(--muted);font-size:13px">${t('noStopsFound')}</span></div>`;
     stopList.classList.add('visible'); return;
   }
   stopList.innerHTML = stops.map(s => {
+    if (s.is_name_grouped && s.stop_ids) {
+      nameGroupedStopMap[s.stop_id] = s.stop_ids;
+    }
     const icon = s.is_terminal
       ? `<span class="stop-terminal-icon">🚏</span>`
-      : `<span class="stop-dot"></span>`;
+      : s.is_name_grouped
+        ? `<span class="stop-terminal-icon">⇄</span>`
+        : `<span class="stop-dot"></span>`;
     const platforms = s.is_terminal && s.platforms.length
-      ? `<span class="stop-platforms">${s.platforms.length} platforms</span>`
-      : '';
+      ? `<span class="stop-platforms">${t('nPlatforms', s.platforms.length)}</span>`
+      : s.is_name_grouped && s.stop_ids && s.stop_ids.length
+        ? `<span class="stop-platforms">${t('nStops', s.stop_ids.length)}</span>`
+        : '';
     const distLabel = showDistance && s.distance_m != null
       ? `<span class="stop-dist">${s.distance_m}m</span>`
       : `<span class="stop-id">#${s.stop_id}</span>`;
@@ -488,9 +786,14 @@ function renderStopList(stops, showDistance = false) {
 function selectStop(stopId, stopName, lat, lon, isTerminal = false) {
   currentStopId = stopId;
   currentIsTerminal = isTerminal;
+  currentIsNameGrouped = !isTerminal && !!(nameGroupedStopMap[stopId] && nameGroupedStopMap[stopId].length > 1);
+  currentGroupedStopIds = currentIsNameGrouped ? nameGroupedStopMap[stopId] : [];
+  stopDirectionMap = {};
   currentStopLat = parseFloat(lat);
   currentStopLon = parseFloat(lon);
   activeCardIndex = null;
+  activeArrivalTripId = null;
+  activeArrivalFilter = { platform: null, direction: null, route: null };
   showAllArrivals = false;
 
   stopList.classList.remove('visible');
@@ -516,26 +819,144 @@ function selectStop(stopId, stopName, lat, lon, isTerminal = false) {
   renderFavorites(); // アクティブ状態を更新
 }
 
+// ── Arrivals filter ───────────────────────────────────────────────────────────
+function getFilteredArrivals() {
+  let arr = lastArrivals;
+  if (activeArrivalFilter.platform !== null) {
+    arr = arr.filter(a => a.platform_code === activeArrivalFilter.platform);
+  }
+  if (activeArrivalFilter.direction !== null) {
+    arr = arr.filter(a => stopDirectionMap[a.stop_id] === activeArrivalFilter.direction);
+  }
+  if (activeArrivalFilter.route !== null) {
+    arr = arr.filter(a => a.route_short_name === activeArrivalFilter.route);
+  }
+  return arr;
+}
+
+function renderFilterBar() {
+  const bar = document.getElementById('arrivals-filter-bar');
+  let html = '';
+
+  if (currentIsTerminal) {
+    // Platform filter for terminals
+    const platforms = [...new Set(lastArrivals.map(a => a.platform_code).filter(Boolean))].sort();
+    if (platforms.length > 1) {
+      html += `<div class="arrivals-filter-group"><span class="arrivals-filter-label">${t('filterPlatform')}</span>`;
+      platforms.forEach(p => {
+        const active = activeArrivalFilter.platform === p ? ' active' : '';
+        html += `<button class="arrivals-filter-chip${active}" onclick="setArrivalFilter('platform','${escAttr(p)}')">${escHtml(p)}</button>`;
+      });
+      html += '</div>';
+    }
+  } else if (currentIsNameGrouped) {
+    // 到着データがある stop_id の方向を補完（stop_directions 未取得分のみ）
+    for (const sid of currentGroupedStopIds) {
+      if (stopDirectionMap[sid] !== undefined) continue;
+      const stopArrivals = lastArrivals.filter(a => a.stop_id === sid);
+      if (!stopArrivals.length) continue;
+      const dir0 = stopArrivals.filter(a => a.direction_id === '0').length;
+      const dir1 = stopArrivals.filter(a => a.direction_id === '1').length;
+      stopDirectionMap[sid] = dir0 >= dir1 ? '0' : '1';
+    }
+    const directions = [...new Set(currentGroupedStopIds.map(sid => stopDirectionMap[sid]).filter(Boolean))].sort();
+    if (directions.length > 1) {
+      const DIR_LABEL = { '0': t('outbound'), '1': t('inbound') };
+      html += `<div class="arrivals-filter-group"><span class="arrivals-filter-label">${t('filterDirection')}</span>`;
+      directions.forEach(d => {
+        const active = activeArrivalFilter.direction === d ? ' active' : '';
+        const label = DIR_LABEL[d] || `Dir ${d}`;
+        const stopsForDir = currentGroupedStopIds.filter(sid => stopDirectionMap[sid] === d);
+        const hasArrivals = lastArrivals.some(a => stopsForDir.includes(a.stop_id));
+        const endedClass = !hasArrivals ? ' ended' : '';
+        const endedBadge = !hasArrivals ? `<span class="filter-ended-badge">${t('dirEnded')}</span>` : '';
+        html += `<button class="arrivals-filter-chip${active}${endedClass}" onclick="setArrivalFilter('direction','${escAttr(d)}')">${escHtml(label)}${endedBadge}</button>`;
+      });
+      html += '</div>';
+    }
+  }
+
+  // Route filter (all stop types, when 2+ distinct routes)
+  const routes = [...new Set(lastArrivals.map(a => a.route_short_name).filter(Boolean))].sort((a, b) => {
+    const na = parseInt(a), nb = parseInt(b);
+    return (!isNaN(na) && !isNaN(nb)) ? na - nb : a.localeCompare(b);
+  });
+  if (routes.length > 1) {
+    html += `<div class="arrivals-filter-group"><span class="arrivals-filter-label">${t('filterRoute')}</span>`;
+    routes.forEach(r => {
+      const active = activeArrivalFilter.route === r ? ' active' : '';
+      html += `<button class="arrivals-filter-chip${active}" onclick="setArrivalFilter('route','${escAttr(r)}')">${escHtml(r)}</button>`;
+    });
+    html += '</div>';
+  }
+
+  bar.innerHTML = html;
+  bar.style.display = html ? 'block' : 'none';
+}
+
+function setArrivalFilter(type, value) {
+  activeArrivalFilter[type] = activeArrivalFilter[type] === value ? null : value;
+  activeCardIndex = null;
+  activeArrivalTripId = null;
+  clearRoute();
+  renderFilterBar();
+  const filtered = getFilteredArrivals();
+  renderArrivals(filtered, showAllArrivals);
+  if (filtered.length > 0) onCardClick(0);
+}
+
 // ── Arrivals ─────────────────────────────────────────────────────────────────
 async function fetchArrivals(stopId) {
   const list = document.getElementById('arrivals-list');
-  list.innerHTML = `<div class="state-msg"><span class="icon">⏳</span><p>Fetching real-time data…</p></div>`;
+  const wasShowingTomorrow = lastArrivals.length > 0 && lastArrivals.some(a => a.day_offset === 1);
+  const isRefresh = lastArrivals.length > 0;
+  if (!isRefresh) {
+    list.innerHTML = `<div class="state-msg"><span class="icon">⏳</span><p>${t('fetchingData')}</p></div>`;
+  } else {
+    list.classList.add('refreshing');
+  }
   try {
     const endpoint = currentIsTerminal
       ? `${API}/api/terminal/${stopId}/arrivals`
-      : `${API}/api/stops/${stopId}/arrivals`;
+      : currentIsNameGrouped
+        ? `${API}/api/stops/multi/arrivals?ids=${currentGroupedStopIds.join(',')}`
+        : `${API}/api/stops/${stopId}/arrivals`;
     const res = await fetch(endpoint);
-    lastArrivals = await res.json();
-    renderArrivals(lastArrivals, showAllArrivals);
+    const data = await res.json();
+    if (currentIsNameGrouped) {
+      lastArrivals = data.arrivals || [];
+      // 静的データから導出した方向情報で stopDirectionMap を初期化（未設定のみ）
+      if (data.stop_directions) {
+        for (const [sid, dir] of Object.entries(data.stop_directions)) {
+          if (stopDirectionMap[sid] === undefined) stopDirectionMap[sid] = dir;
+        }
+      }
+    } else {
+      lastArrivals = data;
+    }
+    list.classList.remove('refreshing');
+    renderFilterBar();
+    const filtered = getFilteredArrivals();
+    renderArrivals(filtered, showAllArrivals);
     clearError();
 
-    // 翌日便が含まれる場合は自動更新を停止
+    // 翌日便が含まれる場合は自動更新を停止し、5分おきに再チェック
     const hasTomorrow = lastArrivals.some(a => a.day_offset === 1);
     if (hasTomorrow && autoRefreshEnabled) {
       clearTimeout(refreshTimer);
       document.getElementById('refresh-bar').classList.remove('visible');
       document.getElementById('auto-refresh-toggle').classList.remove('active');
       autoRefreshEnabled = false;
+      refreshTimer = setTimeout(() => { if (currentStopId) fetchArrivals(currentStopId); }, 5 * 60 * 1000);
+    }
+
+    // 明日便 → 今日便に切り替わった場合: auto-refresh を再開し選択をリセット
+    if (wasShowingTomorrow && !hasTomorrow) {
+      activeCardIndex = null;
+      activeArrivalTripId = null;
+      clearRoute();
+      autoRefreshEnabled = true;
+      document.getElementById('auto-refresh-toggle').classList.add('active');
     }
 
     // 更新間隔を再評価してスケジュール（翌日便チェック後）
@@ -543,17 +964,25 @@ async function fetchArrivals(stopId) {
       scheduleNextRefresh(currentStopId);
     }
 
-    if (activeCardIndex !== null && lastArrivals[activeCardIndex]) {
-      // 既存の選択を維持して再描画
-      const a = lastArrivals[activeCardIndex];
-      showRoute(a.shape_id, a.trip_id, a.route_short_name, a.headsign || a.route_long_name, a.route_color, a.stop_id);
-    } else if (activeCardIndex === null && lastArrivals.length > 0) {
+    if (activeArrivalTripId !== null) {
+      // 既存の選択をtrip_idで再検索して維持
+      const newIdx = filtered.findIndex(a => a.trip_id === activeArrivalTripId);
+      if (newIdx >= 0) {
+        activeCardIndex = newIdx;
+        renderArrivals(filtered, showAllArrivals);
+        const a = filtered[newIdx];
+        showRoute(a.shape_id, a.trip_id, a.route_short_name, a.headsign || a.route_long_name, a.route_color, a.stop_id);
+      } else if (filtered.length > 0) {
+        onCardClick(0);
+      }
+    } else if (activeCardIndex === null && filtered.length > 0) {
       // バス停選択直後（activeCardIndex が null）は最初の便を自動選択
       onCardClick(0);
     }
   } catch {
-    showError('Could not fetch arrival data. Please try again.');
-    list.innerHTML = '';
+    list.classList.remove('refreshing');
+    showError(t('fetchError'));
+    if (!isRefresh) list.innerHTML = '';
   }
 }
 
@@ -570,7 +999,10 @@ function refreshArrivals() {
 function renderArrivals(arrivals, showAll = false) {
   const list = document.getElementById('arrivals-list');
   if (!arrivals.length) {
-    list.innerHTML = `<div class="state-msg"><span class="icon">🚌</span><p>No upcoming buses found.</p></div>`;
+    const isFilteredEmpty = lastArrivals.length > 0;
+    list.innerHTML = isFilteredEmpty
+      ? `<div class="state-msg"><span class="icon">🌙</span><p>${t('serviceEnded')}</p></div>`
+      : `<div class="state-msg"><span class="icon">🚌</span><p>${t('noUpcomingBuses')}</p></div>`;
     return;
   }
   const isMobile = window.innerWidth <= 720;
@@ -581,8 +1013,8 @@ function renderArrivals(arrivals, showAll = false) {
     const min = a.minutes_until;
     const isTomorrow = a.day_offset === 1;
     const minClass = min <= 1 ? 'now' : min <= 5 ? 'soon' : 'later';
-    const minText = min <= 1 ? 'Now' : `${min}`;
-    const label = min <= 1 ? '' : 'min';
+    const minText = min <= 1 ? t('now') : `${min}`;
+    const label = min <= 1 ? '' : t('minLabel');
     const headsign = a.headsign || a.route_long_name || '—';
     const sub = a.headsign ? a.route_long_name : '';
     const active = i === activeCardIndex ? ' active' : '';
@@ -598,12 +1030,12 @@ function renderArrivals(arrivals, showAll = false) {
         ? `<span class="delay-badge early">${delayMin}m</span>`
         : '';
     const tomorrowBadge = isTomorrow
-      ? `<span class="delay-badge tomorrow">Tomorrow</span>`
+      ? `<span class="delay-badge tomorrow">${t('tomorrow')}</span>`
       : '';
 
     const arrivalTimeHtml = isTomorrow
       ? `<div class="minutes later">${clockTime}</div>
-         <div class="minutes-label">tomorrow</div>`
+         <div class="minutes-label">${t('tomorrow')}</div>`
       : `<div class="minutes ${minClass}">${minText}</div>
          <div class="minutes-label">${label}</div>
          ${min >= 10 ? `<div class="arrival-clock">${clockTime}</div>` : ''}`;
@@ -612,7 +1044,7 @@ function renderArrivals(arrivals, showAll = false) {
       <div class="arrival-card${active}" onclick="onCardClick(${i})" style="--route-color:${bgColor}">
         <div class="route-left">
           <div class="route-badge" style="background:${bgColor};color:${textColor}">${escHtml(a.route_short_name)}</div>
-          ${a.platform_code ? `<div class="platform-box"><span class="platform-label">Plat</span><span class="platform-number">${escHtml(a.platform_code)}</span></div>` : ''}
+          ${a.platform_code ? `<div class="platform-box"><span class="platform-label">${t('platLabel')}</span><span class="platform-number">${escHtml(a.platform_code)}</span></div>` : ''}
         </div>
         <div class="route-info">
           <div class="marquee-wrap route-headsign">
@@ -648,7 +1080,7 @@ function renderArrivals(arrivals, showAll = false) {
   // モバイルで件数が超えている場合「もっと見る」ボタンを追加
   if (isMobile && !showAll && arrivals.length > 5) {
     list.innerHTML += `
-      <div id="show-more-btn" onclick="showAllArrivals=true; renderArrivals(lastArrivals, true)" style="
+      <div id="show-more-btn" onclick="showAllArrivals=true; renderArrivals(getFilteredArrivals(), true)" style="
         text-align:center; padding:12px;
         font-family:'Space Mono',monospace; font-size:12px;
         color:var(--accent2); cursor:pointer;
@@ -657,21 +1089,24 @@ function renderArrivals(arrivals, showAll = false) {
       " onmouseover="this.style.background='rgba(0,153,255,0.05)'"
          onmouseout="this.style.background=''"
       >
-        ＋ Show all ${arrivals.length - 5} more
+        ${t('showMore', arrivals.length - 5)}
       </div>`;
   }
 }
 
 function onCardClick(index) {
+  const filtered = getFilteredArrivals();
   if (activeCardIndex === index) {
     activeCardIndex = null;
-    renderArrivals(lastArrivals, showAllArrivals);
+    activeArrivalTripId = null;
+    renderArrivals(filtered, showAllArrivals);
     clearRoute();
     return;
   }
   activeCardIndex = index;
-  renderArrivals(lastArrivals);
-  const a = lastArrivals[index];
+  renderArrivals(filtered);
+  const a = filtered[index];
+  activeArrivalTripId = a.trip_id;
   showRoute(a.shape_id, a.trip_id, a.route_short_name, a.headsign || a.route_long_name, a.route_color, a.stop_id);
 }
 
@@ -681,7 +1116,7 @@ function getRefreshInterval(arrivals) {
   const nextMinutes = arrivals[0].minutes_until ?? 0;
   if (nextMinutes >= 300) return null;   // オフ
   if (nextMinutes >= 100) return 600000; // 10分
-  if (nextMinutes >= 10)  return 60000;  // 1分
+  if (nextMinutes >= 10) return 60000;  // 1分
   return 30000;                          // 30秒
 }
 
@@ -732,7 +1167,7 @@ function renderTimeline(data, lineColor, stopId) {
 
   if (!data) {
     tl.style.display = 'block';
-    tl.innerHTML = `<div style="padding:12px 14px;font-size:12px;color:var(--muted);font-family:'Space Mono',monospace">Stop timeline unavailable</div>`;
+    tl.innerHTML = `<div style="padding:12px 14px;font-size:12px;color:var(--muted);font-family:'Space Mono',monospace">${t('timelineUnavailable')}</div>`;
     return;
   }
 
@@ -796,7 +1231,7 @@ function renderTimeline(data, lineColor, stopId) {
       html += `
         <div class="timeline-section-header collapsed" onclick="toggleTimelineSection(this)">
           <div class="timeline-section-title">
-            Passed
+            ${t('timelinePassed')}
             <span class="count-badge">${passed.length}</span>
           </div>
           <span class="timeline-chevron">▼</span>
@@ -811,7 +1246,7 @@ function renderTimeline(data, lineColor, stopId) {
       html += `
         <div class="timeline-section-header" onclick="toggleTimelineSection(this)">
           <div class="timeline-section-title">
-            Upcoming
+            ${t('timelineUpcoming')}
             <span class="count-badge">${upcoming.length}</span>
           </div>
           <span class="timeline-chevron">▼</span>
@@ -836,7 +1271,7 @@ function renderTimeline(data, lineColor, stopId) {
 
   } catch {
     tl.style.display = 'block';
-    tl.innerHTML = `<div style="padding:12px 14px;font-size:12px;color:var(--muted);font-family:'Space Mono',monospace">Stop timeline unavailable</div>`;
+    tl.innerHTML = `<div style="padding:12px 14px;font-size:12px;color:var(--muted);font-family:'Space Mono',monospace">${t('timelineUnavailable')}</div>`;
   }
 }
 
@@ -912,7 +1347,7 @@ function setAlertFilter(tag) {
 function renderAlertPanel() {
   const list = document.getElementById('alert-panel-list');
   if (!alertsCache.length) {
-    list.innerHTML = `<div class="alert-empty">No active service alerts.</div>`;
+    list.innerHTML = `<div class="alert-empty">${t('alertNone')}</div>`;
     return;
   }
 
@@ -951,7 +1386,7 @@ function renderAlertPanel() {
         ${a.description ? `<div class="alert-description">${escHtml(a.description)}</div>` : ''}
         ${metaTags ? `<div class="alert-meta">${metaTags}</div>` : ''}
       </div>`;
-  }).join('') : `<div class="alert-empty">No alerts for ${escHtml(alertFilterTag)}.</div>`;
+  }).join('') : `<div class="alert-empty">${t('alertNoneFor', escHtml(alertFilterTag))}</div>`;
 
   list.innerHTML = filterBar + countLabel + items;
 }
@@ -994,3 +1429,6 @@ function resumeFromInactivity() {
   document.addEventListener(evt, resetInactivityTimer, { passive: true });
 });
 resetInactivityTimer();
+
+// 初期言語を適用
+applyI18n();

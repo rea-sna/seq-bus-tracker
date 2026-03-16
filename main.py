@@ -78,11 +78,10 @@ def load_gtfs():
 
     routes = pd.read_csv(f"{GTFS_DIR}/routes.txt", dtype=str).fillna("")
 
-    # ── trips: direction_id / block_id は未使用なので除外 ──
     trips = pd.read_csv(
         f"{GTFS_DIR}/trips.txt",
         dtype=str,
-        usecols=lambda c: c in ["route_id", "service_id", "trip_id", "trip_headsign", "shape_id"]
+        usecols=lambda c: c in ["route_id", "service_id", "trip_id", "trip_headsign", "shape_id", "direction_id"]
     ).fillna("")
 
     # バスのみに絞る (route_type == "3")
@@ -116,6 +115,8 @@ def load_gtfs():
     if os.path.exists(cal_dates_path):
         calendar_dates_df = pd.read_csv(cal_dates_path, dtype=str).fillna("")
 
+    if "direction_id" in bus_trips.columns:
+        bus_trips["direction_id"] = bus_trips["direction_id"].astype("category")
     bus_trips  = bus_trips.set_index("trip_id")
     bus_routes = bus_routes.set_index("route_id")
     return stops, bus_routes, bus_trips, stop_times, calendar_df, calendar_dates_df
@@ -174,8 +175,9 @@ import datetime as _dt
 BRISBANE_TZ = _dt.timezone(_dt.timedelta(hours=10))
 
 # ── Realtime endpoints ────────────────────────────────────────────────────────
-TRIP_UPDATES_URL  = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates/Bus"
-SEQ_COMBINED_URL  = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ"
+TRIP_UPDATES_URL     = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates/Bus"
+SEQ_COMBINED_URL     = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ"
+VEHICLE_POS_URL      = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/VehiclePositions/Bus"
 
 # ── GTFS-RT feed cache (30s TTL) ─────────────────────────────────────────────
 _feed_cache: dict = {"data": None, "expires": 0.0}
@@ -191,6 +193,22 @@ def get_feed() -> gtfs_realtime_pb2.FeedMessage:
         feed.ParseFromString(resp.content)
         _feed_cache["data"] = feed
         _feed_cache["expires"] = time.time() + 30
+        return feed
+
+# ── VehiclePositions feed cache (15s TTL) ────────────────────────────────────
+_vehicle_cache: dict = {"data": None, "expires": 0.0}
+_vehicle_lock = threading.Lock()
+
+def get_vehicle_feed() -> gtfs_realtime_pb2.FeedMessage:
+    with _vehicle_lock:
+        if time.time() < _vehicle_cache["expires"] and _vehicle_cache["data"] is not None:
+            return _vehicle_cache["data"]
+        resp = requests.get(VEHICLE_POS_URL, timeout=10)
+        resp.raise_for_status()
+        feed = gtfs_realtime_pb2.FeedMessage()
+        feed.ParseFromString(resp.content)
+        _vehicle_cache["data"] = feed
+        _vehicle_cache["expires"] = time.time() + 15
         return feed
 
 # ── SEQ combined feed cache (60s TTL, for alerts) ────────────────────────────
@@ -299,7 +317,7 @@ def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0):
         return []
 
     # trip情報をmerge（インデックスをリセットしてtrip_idを列に戻す）
-    trip_meta_cols = ["route_id", "trip_headsign"] + (["shape_id"] if "shape_id" in valid_trips.columns else [])
+    trip_meta_cols = ["route_id", "trip_headsign"] + (["shape_id"] if "shape_id" in valid_trips.columns else []) + (["direction_id"] if "direction_id" in valid_trips.columns else [])
     trip_meta = valid_trips[trip_meta_cols].reset_index()
     st = st.merge(trip_meta, on="trip_id", how="inner")
     if st.empty:
@@ -340,6 +358,7 @@ def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0):
             "shape_id":         shape_id,
             "route_color":      f"#{route_color}"      if route_color      else "",
             "route_text_color": f"#{route_text_color}" if route_text_color else "",
+            "direction_id":     _str(row.get("direction_id")),
             "is_static":        True,
             "day_offset":       day_offset,
         })
@@ -376,25 +395,22 @@ def search_stops(request: Request, q: str = ""):
 
     results = []
     seen_parents = set()
+    individual_by_name = {}  # stop_name -> list of rows
 
     for _, row in matched.iterrows():
         parent = row.get("parent_station", "") if has_parent else ""
         loc    = row.get("location_type",  "") if has_loc_type else ""
 
-        # location_type==1 はターミナル自体（乗降不可）→スキップ
         if loc == "1":
             continue
 
         if parent:
-            # ── ホームがあるターミナル ──
+            # ── ホームがあるターミナル ──  (keep existing terminal logic exactly)
             if parent in seen_parents:
                 continue
             seen_parents.add(parent)
 
-            # 同じparent_stationを持つ全ホームを取得
             siblings = stops_df[stops_df["parent_station"] == parent].copy()
-
-            # ターミナル自体の名前・座標（parent行、なければ最初のホームを代用）
             parent_row = stops_df[stops_df["stop_id"] == parent]
             if not parent_row.empty:
                 station_name = parent_row.iloc[0]["stop_name"]
@@ -420,23 +436,48 @@ def search_stops(request: Request, q: str = ""):
                 })
 
             results.append({
-                "stop_id":       parent,
-                "stop_name":     station_name,
-                "stop_lat":      station_lat,
-                "stop_lon":      station_lon,
-                "is_terminal":   True,
-                "platforms":     platforms,
+                "stop_id":        parent,
+                "stop_name":      station_name,
+                "stop_lat":       station_lat,
+                "stop_lon":       station_lon,
+                "is_terminal":    True,
+                "is_name_grouped": False,
+                "stop_ids":       [],
+                "platforms":      platforms,
             })
         else:
-            # ── 通常の単独バス停 ──
-            sc = row.get("stop_code", "") if has_stopcode else ""
+            # Collect for name grouping
+            name = row["stop_name"]
+            if name not in individual_by_name:
+                individual_by_name[name] = []
+            individual_by_name[name].append(row)
+
+    # Process name-grouped individual stops
+    for name, rows in individual_by_name.items():
+        if len(rows) == 1:
+            row = rows[0]
             results.append({
-                "stop_id":     row["stop_id"],
-                "stop_name":   row["stop_name"],
-                "stop_lat":    float(row["stop_lat"]),
-                "stop_lon":    float(row["stop_lon"]),
-                "is_terminal": False,
-                "platforms":   [],
+                "stop_id":        str(row["stop_id"]),
+                "stop_name":      str(row["stop_name"]),
+                "stop_lat":       float(row["stop_lat"]),
+                "stop_lon":       float(row["stop_lon"]),
+                "is_terminal":    False,
+                "is_name_grouped": False,
+                "stop_ids":       [],
+                "platforms":      [],
+            })
+        else:
+            lats = [float(r["stop_lat"]) for r in rows]
+            lons = [float(r["stop_lon"]) for r in rows]
+            results.append({
+                "stop_id":        str(rows[0]["stop_id"]),
+                "stop_name":      name,
+                "stop_lat":       sum(lats) / len(lats),
+                "stop_lon":       sum(lons) / len(lons),
+                "is_terminal":    False,
+                "is_name_grouped": True,
+                "stop_ids":       [str(r["stop_id"]) for r in rows],
+                "platforms":      [],
             })
 
     return results[:20]
@@ -476,6 +517,7 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
 
     results = []
     seen_parents = set()
+    individual_by_name = {}  # stop_name -> list of (row, dist)
 
     for _, row in candidate_df.iterrows():
         parent = row.get("parent_station", "") if has_parent else ""
@@ -511,24 +553,51 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
                     "platform_code": str(pf or sc),
                 })
             results.append({
-                "stop_id":     str(parent),
-                "stop_name":   station_name,
-                "stop_lat":    station_lat,
-                "stop_lon":    station_lon,
-                "is_terminal": True,
-                "platforms":   platforms,
-                "distance_m":  round(dist),
+                "stop_id":        str(parent),
+                "stop_name":      station_name,
+                "stop_lat":       station_lat,
+                "stop_lon":       station_lon,
+                "is_terminal":    True,
+                "is_name_grouped": False,
+                "stop_ids":       [],
+                "platforms":      platforms,
+                "distance_m":     round(dist),
             })
         else:
-            sc = row.get("stop_code", "") if has_stopcode else ""
+            name = str(row["stop_name"])
+            dist = float(sid_to_dist.get(str(row["stop_id"]), 0.0))
+            if name not in individual_by_name:
+                individual_by_name[name] = []
+            individual_by_name[name].append((row, dist))
+
+    for name, rows_dists in individual_by_name.items():
+        if len(rows_dists) == 1:
+            row, dist = rows_dists[0]
             results.append({
-                "stop_id":     str(row["stop_id"]),
-                "stop_name":   str(row["stop_name"]),
-                "stop_lat":    float(row["stop_lat"]),
-                "stop_lon":    float(row["stop_lon"]),
-                "is_terminal": False,
-                "platforms":   [],
-                "distance_m":  round(float(sid_to_dist.get(str(row["stop_id"]), 0.0))),
+                "stop_id":        str(row["stop_id"]),
+                "stop_name":      str(row["stop_name"]),
+                "stop_lat":       float(row["stop_lat"]),
+                "stop_lon":       float(row["stop_lon"]),
+                "is_terminal":    False,
+                "is_name_grouped": False,
+                "stop_ids":       [],
+                "platforms":      [],
+                "distance_m":     round(dist),
+            })
+        else:
+            min_dist = min(d for _, d in rows_dists)
+            lats = [float(r["stop_lat"]) for r, _ in rows_dists]
+            lons = [float(r["stop_lon"]) for r, _ in rows_dists]
+            results.append({
+                "stop_id":        str(rows_dists[0][0]["stop_id"]),
+                "stop_name":      name,
+                "stop_lat":       sum(lats) / len(lats),
+                "stop_lon":       sum(lons) / len(lons),
+                "is_terminal":    False,
+                "is_name_grouped": True,
+                "stop_ids":       [str(r["stop_id"]) for r, _ in rows_dists],
+                "platforms":      [],
+                "distance_m":     round(min_dist),
             })
 
     results.sort(key=lambda x: x["distance_m"])
@@ -622,6 +691,7 @@ def get_terminal_arrivals(request: Request, parent_id: str):
                 "shape_id":         trip_row.get("shape_id", "") or "",
                 "route_color":      f"#{route_color}"      if route_color      else "",
                 "route_text_color": f"#{route_text_color}" if route_text_color else "",
+                "direction_id":     str(trip_row.get("direction_id", "") or ""),
             })
 
     arrivals.sort(key=lambda x: x["arrival_time"])
@@ -637,6 +707,103 @@ def get_terminal_arrivals(request: Request, parent_id: str):
                 break
 
     return arrivals[:20]
+
+
+@app.get("/api/stops/multi/arrivals")
+@limiter.limit("30/minute")
+def get_multi_stop_arrivals(request: Request, ids: str):
+    """同名バス停グループの全stop_idの到着情報を返す"""
+    if stops_df is None or bus_trips_df is None:
+        raise HTTPException(503, "GTFS data not loaded")
+
+    stop_id_list = [s.strip() for s in ids.split(",") if s.strip()]
+    if not stop_id_list:
+        raise HTTPException(400, "No stop IDs provided")
+
+    try:
+        feed = get_feed()
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Translink API error: {e}")
+
+    now = time.time()
+    arrivals = []
+    child_ids = set(stop_id_list)
+
+    for entity in feed.entity:
+        if not entity.HasField("trip_update"):
+            continue
+        for stu in entity.trip_update.stop_time_update:
+            if str(stu.stop_id) not in child_ids:
+                continue
+            delay = 0
+            if stu.HasField("arrival") and stu.arrival.time:
+                arrival_time = stu.arrival.time
+                delay = stu.arrival.delay if stu.arrival.HasField("delay") else 0
+            elif stu.HasField("departure") and stu.departure.time:
+                arrival_time = stu.departure.time
+                delay = stu.departure.delay if stu.departure.HasField("delay") else 0
+            else:
+                continue
+            if arrival_time < now:
+                continue
+
+            trip_id = entity.trip_update.trip.trip_id
+            if trip_id not in bus_trips_df.index:
+                continue
+            if last_stop_by_trip.get(trip_id) == str(stu.stop_id):
+                continue
+            trip_row = bus_trips_df.loc[trip_id]
+
+            route_id = trip_row["route_id"]
+            headsign = trip_row.get("trip_headsign", "") or ""
+            if route_id in bus_routes_df.index:
+                route_row        = bus_routes_df.loc[route_id]
+                route_short      = route_row["route_short_name"]
+                route_long       = route_row["route_long_name"]
+                route_color      = route_row.get("route_color",      "") or ""
+                route_text_color = route_row.get("route_text_color", "") or ""
+            else:
+                route_short, route_long, route_color, route_text_color = "?", "", "", ""
+
+            arrivals.append({
+                "trip_id":          trip_id,
+                "stop_id":          str(stu.stop_id),
+                "platform_code":    "",
+                "route_short_name": route_short,
+                "route_long_name":  route_long,
+                "headsign":         headsign,
+                "arrival_time":     arrival_time,
+                "minutes_until":    max(0, int((arrival_time - now) / 60)),
+                "delay_seconds":    delay,
+                "shape_id":         trip_row.get("shape_id", "") or "",
+                "route_color":      f"#{route_color}"      if route_color      else "",
+                "route_text_color": f"#{route_text_color}" if route_text_color else "",
+                "direction_id":     str(trip_row.get("direction_id", "") or ""),
+            })
+
+    arrivals.sort(key=lambda x: x["arrival_time"])
+
+    if not arrivals:
+        for day_offset in [0, 1]:
+            arrivals = get_static_arrivals(stop_id_list, now, day_offset)
+            if arrivals:
+                break
+
+    # 各 stop_id の主要 direction_id を静的データから導出
+    stop_directions: dict = {}
+    if stop_times_df is not None and "direction_id" in bus_trips_df.columns:
+        for sid in stop_id_list:
+            try:
+                trip_ids = stop_times_df[stop_times_df["stop_id"].isin([sid])]["trip_id"].astype(str).unique()
+                valid = bus_trips_df[bus_trips_df.index.isin(trip_ids)]
+                if not valid.empty:
+                    dir_counts = valid["direction_id"].astype(str).value_counts()
+                    if not dir_counts.empty:
+                        stop_directions[sid] = str(dir_counts.index[0])
+            except Exception:
+                pass
+
+    return {"arrivals": arrivals[:20], "stop_directions": stop_directions}
 
 
 @app.get("/api/stops/{stop_id}/arrivals")
@@ -711,6 +878,7 @@ def get_arrivals(request: Request, stop_id: str):
                 "shape_id":         trip_row.get("shape_id", "") or "",
                 "route_color":      f"#{route_color}"      if route_color      else "",
                 "route_text_color": f"#{route_text_color}" if route_text_color else "",
+                "direction_id":     str(trip_row.get("direction_id", "") or ""),
             })
 
     arrivals.sort(key=lambda x: x["arrival_time"])
@@ -820,6 +988,35 @@ def get_trip_stops(request: Request, trip_id: str):
         })
 
     return {"trip_id": trip_id, "stops": stops_list}
+
+
+@app.get("/api/trips/{trip_id:path}/vehicle")
+@limiter.limit("60/minute")
+def get_vehicle_position(request: Request, trip_id: str):
+    """指定tripのバス車両の現在位置を返す（VehiclePositions）"""
+    try:
+        feed = get_vehicle_feed()
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Translink API error: {e}")
+
+    for entity in feed.entity:
+        if not entity.HasField("vehicle"):
+            continue
+        vp = entity.vehicle
+        if vp.trip.trip_id != trip_id:
+            continue
+        pos = vp.position
+        return {
+            "lat":              float(pos.latitude),
+            "lon":              float(pos.longitude),
+            "bearing":          float(pos.bearing),
+            "speed":            float(pos.speed),
+            "timestamp":        int(vp.timestamp) if vp.timestamp else None,
+            "current_stop_id":  vp.stop_id or None,
+            "current_status":   int(vp.current_status),  # 0=INCOMING_AT 1=STOPPED_AT 2=IN_TRANSIT_TO
+        }
+
+    return None
 
 
 @app.get("/api/alerts")
