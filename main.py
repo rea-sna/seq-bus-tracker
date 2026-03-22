@@ -49,16 +49,26 @@ def download_gtfs_if_needed():
     """gtfs/stops.txt がなければTranslinkからダウンロードして展開する"""
     if os.path.exists(os.path.join(GTFS_DIR, "stops.txt")):
         return  # すでにある場合はスキップ
-    import urllib.request, zipfile
+    import zipfile
     os.makedirs(GTFS_DIR, exist_ok=True)
     zip_path = os.path.join(GTFS_DIR, "gtfs.zip")
-    print("⬇️  Downloading GTFS from Translink...")
-    urllib.request.urlretrieve(GTFS_URL, zip_path)
-    print("📦 Extracting GTFS...")
-    with zipfile.ZipFile(zip_path) as z:
-        z.extractall(GTFS_DIR)
-    os.remove(zip_path)
-    print("✅ GTFS ready")
+    print("Downloading GTFS from Translink...")
+    try:
+        response = requests.get(GTFS_URL, stream=True, timeout=300)
+        response.raise_for_status()
+        with open(zip_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                f.write(chunk)
+        print("Extracting GTFS...")
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(GTFS_DIR)
+        os.remove(zip_path)
+        print("GTFS ready")
+    except Exception as e:
+        # 失敗した場合は中途半端なファイルを削除
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+        raise RuntimeError(f"Failed to download GTFS: {e}") from e
 
 download_gtfs_if_needed()
 
