@@ -173,6 +173,195 @@ h1 span {
 }
 
 /* ── Search ── */
+/* ── Search tabs ── */
+.search-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.search-tabs #alert-btn {
+  margin-left: auto;
+}
+
+.search-tab {
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.search-tab:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.search-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #000;
+}
+
+/* ── Route search list ── */
+.route-list-item {
+  gap: 12px;
+}
+
+.route-list-badge {
+  font-family: 'Space Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  width: 52px;
+  text-align: center;
+  padding: 4px 0;
+  border-radius: 4px;
+  flex-shrink: 0;
+  letter-spacing: 0.03em;
+}
+
+.route-list-name {
+  font-size: 13px;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Route stops panel ── */
+#route-stops-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.route-stops-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.route-stops-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.route-stops-headsign {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.route-stops-badge {
+  font-family: 'Space Mono', monospace;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 5px;
+  flex-shrink: 0;
+  letter-spacing: 0.03em;
+}
+
+.route-dir-btns {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.route-dir-btn {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.route-dir-btn:hover,
+.route-dir-btn.active {
+  background: var(--accent2);
+  border-color: var(--accent2);
+  color: #fff;
+}
+
+.route-stops-list {
+  padding: 8px 0;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.route-stop-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  padding: 0 16px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.route-stop-item:hover {
+  background: rgba(0, 229, 160, 0.05);
+}
+
+.route-stop-line-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 20px;
+  flex-shrink: 0;
+  align-self: stretch;
+}
+
+.route-stop-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--accent2);
+  background: var(--surface);
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+.route-stop-line {
+  width: 2px;
+  flex: 1;
+  background: var(--accent2);
+  opacity: 0.4;
+}
+
+.route-stop-line-spacer {
+  flex: 1;
+}
+
+.route-stop-name {
+  font-size: 13px;
+  padding: 13px 0 13px 10px;
+  flex: 1;
+  line-height: 1.4;
+}
+
+/* ── Search wrap ── */
 .search-wrap {
   position: relative;
   margin-bottom: 8px;
@@ -272,6 +461,45 @@ h1 span {
   transition: background 0.15s;
 }
 
+.stop-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stop-item-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stop-route-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.stop-route-badge {
+  font-family: 'Space Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  width: 38px;
+  text-align: center;
+  padding: 2px 0;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.06);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  letter-spacing: 0.03em;
+}
+
+.stop-route-more {
+  color: var(--muted);
+  opacity: 0.7;
+}
+
 .stop-item:last-child {
   border-bottom: none;
 }
@@ -299,6 +527,13 @@ h1 span {
   color: var(--muted);
   margin-left: auto;
   flex-shrink: 0;
+}
+
+.stop-fav-star {
+  font-size: 13px;
+  color: var(--accent);
+  flex-shrink: 0;
+  line-height: 1;
 }
 
 .stop-dist {
@@ -342,18 +577,30 @@ h1 span {
 }
 
 .stop-header-name {
-  font-size: 20px;
+  font-size: 26px;
   font-weight: 700;
   margin-bottom: 4px;
 }
 
-.stop-header-meta {
-  font-family: 'Space Mono', monospace;
-  font-size: 11px;
-  color: var(--muted);
+.stop-header-routes {
   display: flex;
-  gap: 16px;
   flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.stop-header-route-badge {
+  font-family: 'Space Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  width: 52px;
+  text-align: center;
+  padding: 4px 0;
+  border-radius: 4px;
+  background: var(--accent2);
+  color: #fff;
+  border: 1px solid transparent;
+  letter-spacing: 0.03em;
 }
 
 /* ── Buttons ── */
@@ -428,6 +675,52 @@ h1 span {
 .toggle-btn.active .toggle-thumb {
   transform: translateX(12px);
   background: #fff;
+}
+
+/* ── Demo button ── */
+.demo-btn {
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.demo-btn:hover {
+  border-color: #f59e0b;
+  color: #f59e0b;
+}
+
+.demo-btn.active {
+  background: #f59e0b;
+  border-color: #f59e0b;
+  color: #000;
+}
+
+/* ── Demo banner ── */
+#demo-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #f59e0b;
+  font-size: 12px;
+  font-family: 'Space Mono', monospace;
+}
+
+.demo-banner-icon {
+  font-size: 14px;
+  flex-shrink: 0;
 }
 
 /* ── Main layout ── */
@@ -1191,18 +1484,23 @@ footer {
   }
 
   .stop-header-name {
-    font-size: 16px;
+    font-size: 20px;
   }
 
-  .stop-header-meta {
-    font-size: 10px;
-    gap: 10px;
+  .stop-header-route-badge {
+    font-size: 11px;
+    width: 46px;
   }
 
   /* RefreshボタンとAutoトグルを小さく */
   .refresh-btn {
     font-size: 11px;
     padding: 4px 8px;
+  }
+
+  .demo-btn {
+    font-size: 9px;
+    padding: 4px 6px;
   }
 
   .toggle-btn {
@@ -1515,11 +1813,7 @@ footer {
   color: var(--warn);
 }
 
-/* ── Alert bar & button ── */
-#alert-bar {
-  margin-bottom: 12px;
-}
-
+/* ── Alert button ── */
 #alert-btn {
   display: inline-flex;
   align-items: center;
@@ -1910,6 +2204,7 @@ footer {
 
 .arrivals-filter-group {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   margin-bottom: 10px;
   gap: 4px;

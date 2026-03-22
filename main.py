@@ -153,6 +153,32 @@ try:
         .last()
         .to_dict()
     )
+    # stop_id → 路線情報リスト の辞書（バス停カード表示用）
+    _route_color_cols = [c for c in ["route_short_name", "route_color", "route_text_color"] if c in bus_routes_df.columns]
+    _st_routes = (
+        stop_times_df[["trip_id", "stop_id"]]
+        .drop_duplicates()
+        .merge(bus_trips_df[["route_id"]].reset_index(), on="trip_id", how="inner")
+        .merge(bus_routes_df[_route_color_cols].reset_index(), on="route_id", how="inner")
+    )
+    def _build_stop_routes(grp):
+        seen = {}
+        for _, row in grp.iterrows():
+            name = str(row["route_short_name"])
+            if name not in seen:
+                rc  = str(row.get("route_color",      "") or "")
+                rtc = str(row.get("route_text_color", "") or "")
+                seen[name] = {
+                    "name":       name,
+                    "color":      f"#{rc}"  if rc  else "",
+                    "text_color": f"#{rtc}" if rtc else "",
+                }
+        return sorted(seen.values(), key=lambda r: (not r["name"].isdigit(), r["name"].zfill(6) if r["name"].isdigit() else r["name"]))
+    stop_routes_dict: dict = {
+        sid: _build_stop_routes(grp)
+        for sid, grp in _st_routes.groupby("stop_id", observed=True)
+    }
+    del _st_routes
     # 近傍バス停検索用 numpy 配列を初期化
     _stops_lat_arr = stops_df["stop_lat"].values  # float32
     _stops_lon_arr = stops_df["stop_lon"].values  # float32
@@ -167,6 +193,7 @@ except FileNotFoundError as e:
     print(f"⚠️  GTFS files not found: {e}")
     stops_df = bus_routes_df = bus_trips_df = stop_times_df = shapes_dict = None
     calendar_df = calendar_dates_df = None
+    stop_routes_dict = {}
     last_stop_by_trip = {}
 
 # ── Timezone ──────────────────────────────────────────────────────────────────
@@ -245,6 +272,23 @@ def _get_translated_text(translated) -> str:
         if t.language in ("en", "en-AU", "en-au", ""):
             return t.text
     return translated.translation[0].text
+
+def _merge_routes(stop_id_list: list) -> list:
+    """複数 stop_id の路線情報を統合してソート済みリストで返す"""
+    seen: dict = {}
+    for sid in stop_id_list:
+        for r in stop_routes_dict.get(str(sid), []):
+            if r["name"] not in seen:
+                seen[r["name"]] = r
+    return sorted(seen.values(), key=lambda r: (not r["name"].isdigit(), r["name"].zfill(6) if r["name"].isdigit() else r["name"]))
+
+# ── Demo mode helper ──────────────────────────────────────────────────────────
+def _demo_now() -> float:
+    """デモ用基準時刻: 今日のブリスベン時間 08:00"""
+    import datetime
+    today = datetime.datetime.now(BRISBANE_TZ).date()
+    return datetime.datetime(today.year, today.month, today.day, 8, 0, 0,
+                             tzinfo=BRISBANE_TZ).timestamp()
 
 # ── Static timetable fallback helper ─────────────────────────────────────────
 def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0):
@@ -444,6 +488,7 @@ def search_stops(request: Request, q: str = ""):
                 "is_name_grouped": False,
                 "stop_ids":       [],
                 "platforms":      platforms,
+                "routes":         _merge_routes([sib["stop_id"] for _, sib in siblings.iterrows()]),
             })
         else:
             # Collect for name grouping
@@ -465,6 +510,7 @@ def search_stops(request: Request, q: str = ""):
                 "is_name_grouped": False,
                 "stop_ids":       [],
                 "platforms":      [],
+                "routes":         _merge_routes([row["stop_id"]]),
             })
         else:
             lats = [float(r["stop_lat"]) for r in rows]
@@ -478,9 +524,10 @@ def search_stops(request: Request, q: str = ""):
                 "is_name_grouped": True,
                 "stop_ids":       [str(r["stop_id"]) for r in rows],
                 "platforms":      [],
+                "routes":         _merge_routes([r["stop_id"] for r in rows]),
             })
 
-    return results[:20]
+    return [r for r in results if r.get("routes")][:20]
 
 
 @app.get("/api/stops/nearby")
@@ -561,6 +608,7 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
                 "is_name_grouped": False,
                 "stop_ids":       [],
                 "platforms":      platforms,
+                "routes":         _merge_routes([str(sib["stop_id"]) for _, sib in siblings.iterrows()]),
                 "distance_m":     round(dist),
             })
         else:
@@ -582,6 +630,7 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
                 "is_name_grouped": False,
                 "stop_ids":       [],
                 "platforms":      [],
+                "routes":         _merge_routes([row["stop_id"]]),
                 "distance_m":     round(dist),
             })
         else:
@@ -597,16 +646,17 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
                 "is_name_grouped": True,
                 "stop_ids":       [str(r["stop_id"]) for r, _ in rows_dists],
                 "platforms":      [],
+                "routes":         _merge_routes([r["stop_id"] for r, _ in rows_dists]),
                 "distance_m":     round(min_dist),
             })
 
     results.sort(key=lambda x: x["distance_m"])
-    return results[:limit]
+    return [r for r in results if r.get("routes")][:limit]
 
 
 @app.get("/api/terminal/{parent_id}/arrivals")
 @limiter.limit("30/minute")
-def get_terminal_arrivals(request: Request, parent_id: str):
+def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
     """ターミナルの全ホームをまとめて取得し、platform_codeを付与して返す"""
     if stops_df is None or bus_trips_df is None:
         raise HTTPException(503, "GTFS data not loaded")
@@ -632,14 +682,26 @@ def get_terminal_arrivals(request: Request, parent_id: str):
     if not child_ids:
         raise HTTPException(404, "Terminal not found")
 
+    now = _demo_now() if demo else time.time()
+    arrivals = []
+
+    if demo:
+        # デモモード: 静的時刻表のみ使用
+        for day_offset in [0, 1]:
+            static = get_static_arrivals(list(child_ids), now, day_offset)
+            for a in static:
+                a["platform_code"] = platform_map.get(a["stop_id"], "")
+                a["is_demo"] = True
+            if static:
+                arrivals = static
+                break
+        return arrivals[:20]
+
     # リアルタイムフィード取得（キャッシュ使用）
     try:
         feed = get_feed()
     except requests.RequestException as e:
         raise HTTPException(502, f"Translink API error: {e}")
-
-    now = time.time()
-    arrivals = []
 
     for entity in feed.entity:
         if not entity.HasField("trip_update"):
@@ -656,7 +718,7 @@ def get_terminal_arrivals(request: Request, parent_id: str):
                 delay = stu.departure.delay if stu.departure.HasField("delay") else 0
             else:
                 continue
-            if arrival_time < now:
+            if arrival_time < now - 90:
                 continue
 
             trip_id = entity.trip_update.trip.trip_id
@@ -711,7 +773,7 @@ def get_terminal_arrivals(request: Request, parent_id: str):
 
 @app.get("/api/stops/multi/arrivals")
 @limiter.limit("30/minute")
-def get_multi_stop_arrivals(request: Request, ids: str):
+def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
     """同名バス停グループの全stop_idの到着情報を返す"""
     if stops_df is None or bus_trips_df is None:
         raise HTTPException(503, "GTFS data not loaded")
@@ -720,14 +782,36 @@ def get_multi_stop_arrivals(request: Request, ids: str):
     if not stop_id_list:
         raise HTTPException(400, "No stop IDs provided")
 
+    now = _demo_now() if demo else time.time()
+    arrivals = []
+    child_ids = set(stop_id_list)
+
+    if demo:
+        for day_offset in [0, 1]:
+            arrivals = get_static_arrivals(stop_id_list, now, day_offset)
+            if arrivals:
+                for a in arrivals:
+                    a["is_demo"] = True
+                break
+        # stop_directions は通常どおり算出
+        stop_directions: dict = {}
+        if stop_times_df is not None and "direction_id" in bus_trips_df.columns:
+            for sid in stop_id_list:
+                try:
+                    trip_ids = stop_times_df[stop_times_df["stop_id"].isin([sid])]["trip_id"].astype(str).unique()
+                    valid = bus_trips_df[bus_trips_df.index.isin(trip_ids)]
+                    if not valid.empty:
+                        dir_counts = valid["direction_id"].astype(str).value_counts()
+                        if not dir_counts.empty:
+                            stop_directions[sid] = str(dir_counts.index[0])
+                except Exception:
+                    pass
+        return {"arrivals": arrivals[:20], "stop_directions": stop_directions}
+
     try:
         feed = get_feed()
     except requests.RequestException as e:
         raise HTTPException(502, f"Translink API error: {e}")
-
-    now = time.time()
-    arrivals = []
-    child_ids = set(stop_id_list)
 
     for entity in feed.entity:
         if not entity.HasField("trip_update"):
@@ -744,7 +828,7 @@ def get_multi_stop_arrivals(request: Request, ids: str):
                 delay = stu.departure.delay if stu.departure.HasField("delay") else 0
             else:
                 continue
-            if arrival_time < now:
+            if arrival_time < now - 90:
                 continue
 
             trip_id = entity.trip_update.trip.trip_id
@@ -808,19 +892,28 @@ def get_multi_stop_arrivals(request: Request, ids: str):
 
 @app.get("/api/stops/{stop_id}/arrivals")
 @limiter.limit("30/minute")
-def get_arrivals(request: Request, stop_id: str):
+def get_arrivals(request: Request, stop_id: str, demo: bool = False):
     """指定バス停の次のバス一覧（リアルタイム）"""
     if bus_trips_df is None:
         raise HTTPException(503, "GTFS data not loaded")
+
+    now = _demo_now() if demo else time.time()
+    arrivals = []
+
+    if demo:
+        for day_offset in [0, 1]:
+            arrivals = get_static_arrivals([stop_id], now, day_offset)
+            if arrivals:
+                for a in arrivals:
+                    a["is_demo"] = True
+                break
+        return arrivals[:15]
 
     # リアルタイムフィード取得（キャッシュ使用）
     try:
         feed = get_feed()
     except requests.RequestException as e:
         raise HTTPException(502, f"Translink API error: {e}")
-
-    now = time.time()
-    arrivals = []
 
     for entity in feed.entity:
         if not entity.HasField("trip_update"):
@@ -841,7 +934,7 @@ def get_arrivals(request: Request, stop_id: str):
             else:
                 continue
 
-            if arrival_time < now:
+            if arrival_time < now - 90:
                 continue  # 過去の便はスキップ
 
             trip_id = entity.trip_update.trip.trip_id
@@ -903,11 +996,24 @@ def get_stop(request: Request, stop_id: str):
     if row.empty:
         raise HTTPException(404, "Stop not found")
     r = row.iloc[0]
+    parent   = str(r.get("parent_station", "") or "")
+    loc_type = str(r.get("location_type",  "") or "")
+    if parent:
+        # 子プラットホーム → 同じ親を持つ兄弟から集約
+        sib_ids = stops_df[stops_df["parent_station"] == parent]["stop_id"].tolist()
+        routes = _merge_routes(sib_ids)
+    elif loc_type == "1":
+        # 親station自体が渡された場合（ターミナル）→ 子プラットホームから集約
+        child_ids = stops_df[stops_df["parent_station"] == str(stop_id)]["stop_id"].tolist()
+        routes = _merge_routes(child_ids) if child_ids else _merge_routes([str(r["stop_id"])])
+    else:
+        routes = _merge_routes([str(r["stop_id"])])
     return {
         "stop_id":   r["stop_id"],
         "stop_name": r["stop_name"],
         "stop_lat":  float(r["stop_lat"]),
         "stop_lon":  float(r["stop_lon"]),
+        "routes":    routes,
     }
 
 
@@ -1083,6 +1189,92 @@ def get_alerts(request: Request):
     return alerts
 
 
+@app.get("/api/routes/search")
+@limiter.limit("60/minute")
+def search_routes(request: Request, q: str = ""):
+    """路線番号・路線名で検索"""
+    if bus_routes_df is None:
+        raise HTTPException(503, "GTFS data not loaded")
+    if len(q) < 1:
+        return []
+    mask = (
+        bus_routes_df["route_short_name"].str.contains(q, case=False, na=False) |
+        bus_routes_df["route_long_name"].str.contains(q, case=False, na=False)
+    )
+    matched = bus_routes_df[mask].reset_index()
+    results = []
+    for _, row in matched.iterrows():
+        rc  = str(row.get("route_color",      "") or "")
+        rtc = str(row.get("route_text_color", "") or "")
+        results.append({
+            "route_id":         row["route_id"],
+            "route_short_name": row["route_short_name"],
+            "route_long_name":  str(row.get("route_long_name", "") or ""),
+            "route_color":      f"#{rc}"  if rc  else "",
+            "route_text_color": f"#{rtc}" if rtc else "",
+        })
+    return results[:30]
+
+
+@app.get("/api/routes/{route_id}/stops")
+@limiter.limit("30/minute")
+def get_route_stops(request: Request, route_id: str, direction: int = 0):
+    """路線の代表便のバス停一覧を方向別に返す"""
+    if bus_trips_df is None or stop_times_df is None or stops_df is None:
+        raise HTTPException(503, "GTFS data not loaded")
+
+    trips = bus_trips_df[bus_trips_df["route_id"] == route_id]
+    if trips.empty:
+        raise HTTPException(404, "Route not found")
+
+    if "direction_id" in trips.columns:
+        dir_trips = trips[trips["direction_id"].astype(str) == str(direction)]
+        if dir_trips.empty:
+            dir_trips = trips
+    else:
+        dir_trips = trips
+
+    # 最も停留所数が多い便を代表便として選択
+    trip_ids = set(dir_trips.index)
+    st_sub = stop_times_df[stop_times_df["trip_id"].isin(trip_ids)]
+    if st_sub.empty:
+        raise HTTPException(404, "No stops found")
+    best_trip_id = st_sub.groupby("trip_id", observed=True).size().idxmax()
+
+    trip_st = stop_times_df[stop_times_df["trip_id"] == best_trip_id].sort_values("stop_sequence")
+    merged = trip_st.merge(
+        stops_df[["stop_id", "stop_name", "stop_lat", "stop_lon"]],
+        on="stop_id", how="left"
+    )
+
+    trip_row = bus_trips_df.loc[best_trip_id]
+    headsign = str(trip_row.get("trip_headsign", "") or "")
+
+    # 両方向のheadsignを取得（方向切り替えUI用）
+    direction_headsigns: dict = {}
+    if "direction_id" in trips.columns:
+        for d in ["0", "1"]:
+            d_trips = trips[trips["direction_id"].astype(str) == d]
+            if not d_trips.empty:
+                sample = d_trips.iloc[0]
+                direction_headsigns[d] = str(sample.get("trip_headsign", "") or "")
+
+    return {
+        "headsign":           headsign,
+        "direction_headsigns": direction_headsigns,
+        "stops": [
+            {
+                "stop_id":   str(row["stop_id"]),
+                "stop_name": str(row["stop_name"]),
+                "stop_lat":  float(row["stop_lat"]),
+                "stop_lon":  float(row["stop_lon"]),
+                "routes":    _merge_routes([str(row["stop_id"])]),
+            }
+            for _, row in merged.iterrows()
+        ],
+    }
+
+
 @app.get("/api/shapes/{shape_id:path}")  # :path でスラッシュを含むIDも受け取れる
 @limiter.limit("30/minute")
 def get_shape(request: Request, shape_id: str):
@@ -1093,6 +1285,14 @@ def get_shape(request: Request, shape_id: str):
     if coords_arr is None:
         raise HTTPException(404, f"Shape not found: {shape_id}")
     return {"shape_id": shape_id, "coords": coords_arr.tolist()}
+
+
+# ── App config ────────────────────────────────────────────────────────────────
+@app.get("/api/config")
+def get_config():
+    return {
+        "demo_enabled": os.environ.get("DEMO_MODE_ENABLED", "").lower() in ("1", "true", "yes"),
+    }
 
 
 # ── Static files (frontend) ───────────────────────────────────────────────────

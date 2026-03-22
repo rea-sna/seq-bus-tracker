@@ -40,6 +40,15 @@
       <div id="favorites-list"></div>
     </div>
 
+    <div class="search-tabs">
+      <button class="search-tab active" id="tab-stop" onclick="switchTab('stop')" data-i18n="tabStop">Stop</button>
+      <button class="search-tab" id="tab-route" onclick="switchTab('route')" data-i18n="tabRoute">Route</button>
+      <button id="alert-btn" onclick="openAlertPanel()" title="Service Alerts" style="display:none;">
+        <span class="alert-bell-icon">🔔</span>
+        <span id="alert-count-badge" class="alert-count-badge"></span>
+        <span class="alert-btn-label" data-i18n="alertBtnLabel">Service Alerts</span>
+      </button>
+    </div>
     <div class="search-wrap">
       <span class="search-icon">⌕</span>
       <input id="search-input" type="text" placeholder="Search for a bus stop…" autocomplete="off" />
@@ -48,14 +57,7 @@
       </button>
     </div>
     <div id="stop-list"></div>
-
-    <div id="alert-bar" style="display:none;">
-      <button id="alert-btn" onclick="openAlertPanel()" title="Service Alerts">
-        <span class="alert-bell-icon">🔔</span>
-        <span id="alert-count-badge" class="alert-count-badge"></span>
-        <span class="alert-btn-label" data-i18n="alertBtnLabel">Service Alerts</span>
-      </button>
-    </div>
+    <div id="route-stops-panel" style="display:none;"></div>
 
     <div class="error-msg" id="error-msg"></div>
 
@@ -66,13 +68,7 @@
 
     <div id="stop-header">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
-        <div>
-          <div class="stop-header-name" id="stop-header-name">—</div>
-          <div class="stop-header-meta">
-            <span id="stop-header-id">—</span>
-            <span id="stop-header-coords">—</span>
-          </div>
-        </div>
+        <div class="stop-header-name" id="stop-header-name">—</div>
         <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
           <button class="fav-btn" id="fav-btn" onclick="toggleFavorite()" title="Add to favorites">☆</button>
           <button class="refresh-btn" id="refresh-btn" onclick="refreshArrivals()" data-i18n="refreshBtnLabel">↺ Refresh</button>
@@ -80,12 +76,21 @@
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
             <span class="toggle-label" data-i18n="autoLabel">Auto</span>
           </button>
+          <button class="demo-btn" id="demo-mode-toggle" onclick="toggleDemoMode()" title="Toggle demo mode" style="display:none;">
+            <span data-i18n="demoLabel">DEMO</span>
+          </button>
         </div>
       </div>
+      <div id="stop-header-routes" class="stop-header-routes"></div>
     </div>
 
     <div class="refresh-bar" id="refresh-bar">
       <div class="refresh-bar-fill" id="refresh-bar-fill"></div>
+    </div>
+
+    <div id="demo-banner" style="display:none;">
+      <span class="demo-banner-icon">🎬</span>
+      <span data-i18n="demoBanner">Demo mode — showing timetable from 8:00 AM today</span>
     </div>
 
     <div id="main-panel">

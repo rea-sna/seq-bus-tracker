@@ -8,6 +8,12 @@ function resolveRouteColor(routeShort, routeColor) {
 }
 
 let autoRefreshEnabled = true;
+let demoMode = false;
+let currentStopRoutes = [];
+let currentTab = 'stop';
+let currentRouteId = null;
+let currentRouteDirection = 0;
+let currentRouteData = null;
 let currentStopId = null;  // ターミナルはparent_id、通常停はstop_id
 let currentIsTerminal = false;
 let currentStopLat = null;
@@ -81,6 +87,14 @@ const STRINGS = {
     vehicleAtStop: 'At this stop',
     vehiclePassed: 'Passed this stop',
     vehicleCurrentStop: stop => `At: ${stop}`,
+    demoLabel: 'DEMO',
+    demoBanner: 'Demo mode — showing timetable from 8:00 AM today',
+    tabStop: 'Stop',
+    tabRoute: 'Route',
+    routeSearchPlaceholder: 'Search by route number…',
+    noRoutesFound: 'No routes found',
+    routeDir0: 'Outbound',
+    routeDir1: 'Inbound',
   },
   ja: {
     searchPlaceholder: 'バス停を検索…',
@@ -136,6 +150,14 @@ const STRINGS = {
     vehicleAtStop: '停車中',
     vehiclePassed: '通過済み',
     vehicleCurrentStop: stop => `現在地: ${stop}`,
+    demoLabel: 'DEMO',
+    demoBanner: 'デモモード — 本日 08:00 からの時刻表を表示中',
+    tabStop: 'バス停',
+    tabRoute: '路線',
+    routeSearchPlaceholder: '路線番号で検索…',
+    noRoutesFound: '路線が見つかりません',
+    routeDir0: '下り',
+    routeDir1: '上り',
   }
 };
 
@@ -171,68 +193,6 @@ function toggleLang() {
   }
 }
 
-// ── Favorites ────────────────────────────────────────────────────────────────
-// { stop_id, stop_name, stop_lat, stop_lon, is_terminal }
-let favorites = JSON.parse(localStorage.getItem('seq_favorites') || '[]');
-
-function saveFavorites() {
-  localStorage.setItem('seq_favorites', JSON.stringify(favorites));
-}
-
-function renderFavorites() {
-  const section = document.getElementById('favorites-section');
-  const list = document.getElementById('favorites-list');
-  if (!favorites.length) {
-    section.style.display = 'none';
-    return;
-  }
-  section.style.display = 'block';
-  list.innerHTML = favorites.map((f, i) => `
-    <div class="fav-item${currentStopId === f.stop_id ? ' active' : ''}"
-         onclick="selectStop('${f.stop_id}','${escAttr(f.stop_name)}','${f.stop_lat}','${f.stop_lon}',${f.is_terminal || false})">
-      <span class="fav-icon">★</span>
-      <span class="fav-name">${escHtml(f.stop_name)}</span>
-      <button class="fav-remove" onclick="removeFavorite(event,${i})" title="Remove">×</button>
-    </div>`).join('');
-}
-
-function toggleFavorite() {
-  if (!currentStopId) return;
-  const idx = favorites.findIndex(f => f.stop_id === currentStopId);
-  if (idx >= 0) {
-    favorites.splice(idx, 1);
-  } else {
-    favorites.push({
-      stop_id: currentStopId,
-      stop_name: document.getElementById('stop-header-name').textContent,
-      stop_lat: currentStopLat,
-      stop_lon: currentStopLon,
-      is_terminal: currentIsTerminal || false,
-    });
-  }
-  saveFavorites();
-  renderFavorites();
-  updateFavBtn();
-}
-
-function removeFavorite(e, index) {
-  e.stopPropagation();
-  favorites.splice(index, 1);
-  saveFavorites();
-  renderFavorites();
-  updateFavBtn();
-}
-
-function updateFavBtn() {
-  const btn = document.getElementById('fav-btn');
-  if (!btn) return;
-  const isFav = favorites.some(f => f.stop_id === currentStopId);
-  btn.textContent = isFav ? '★' : '☆';
-  btn.classList.toggle('active', isFav);
-}
-
-// 起動時にお気に入りを描画
-renderFavorites();
 let lastArrivals = [];
 
 // ── Favorites ────────────────────────────────────────────────────────────────
@@ -265,6 +225,7 @@ function toggleFavorite() {
       stop_lon: currentStopLon,
       is_terminal: currentIsTerminal,
       stop_ids: currentIsNameGrouped ? currentGroupedStopIds : [],
+      routes: currentStopRoutes || [],
     });
   }
   saveFavorites(favs);
@@ -297,12 +258,16 @@ function renderFavorites() {
     return;
   }
   section.style.display = 'block';
-  list.innerHTML = favs.map(f => `
+  list.innerHTML = favs.map(f => {
+    const routesJson = escAttr(JSON.stringify(f.routes || []));
+    return `
     <div class="fav-chip${f.stop_id === currentStopId ? ' active' : ''}"
-         onclick="selectStop('${f.stop_id}','${escAttr(f.stop_name)}','${f.stop_lat}','${f.stop_lon}',${f.is_terminal || false})">
+         onclick="selectStop('${f.stop_id}','${escAttr(f.stop_name)}','${f.stop_lat}','${f.stop_lon}',${f.is_terminal || false},JSON.parse(this.dataset.routes))"
+         data-routes="${routesJson}">
       <span class="fav-chip-name">${escHtml(f.stop_name)}</span>
       <button class="fav-chip-remove" onclick="removeFavorite(event,'${f.stop_id}')">×</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 function removeFavorite(e, stopId) {
@@ -387,10 +352,12 @@ let stopMarker = null;
 let routeLayer = null;
 let stopDotLayer = null;
 let neonAnimationId = null;
+let routeRenderToken = null;
 let vehicleMarker = null;
 let vehicleRefreshTimer = null;
 let currentTripStops = null;
 let currentVehicleTargetStopId = null;
+let vehicleZoomedAt2Stops = false;
 
 const stopIcon = L.divIcon({
   className: '',
@@ -411,6 +378,9 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
   if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
   if (stopDotLayer) { map.removeLayer(stopDotLayer); stopDotLayer = null; }
 
+  const myToken = {};
+  routeRenderToken = myToken;
+
   const hint = document.getElementById('map-hint');
   const lineColor = resolveRouteColor(routeShort, routeColor) || '#0099ff';
   hint.innerHTML = `<span style="color:var(--muted)">${t('mapLoading')}</span>`;
@@ -420,6 +390,9 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
     shapeId ? fetch(`${API}/api/shapes/${shapeId}`).catch(() => null) : Promise.resolve(null),
     fetch(`${API}/api/trips/${tripId}/stops`).catch(() => null),
   ]);
+
+  // 待機中に別のバスが選択された場合は描画をキャンセル
+  if (routeRenderToken !== myToken) return;
 
   let stData = null;
   if (stRes && stRes.ok) {
@@ -514,12 +487,14 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
 
     if (stopMarker) stopMarker.setZIndexOffset(1000);
 
-    try {
-      const bounds = currentStopLat
-        ? routeLayer.getBounds().extend([currentStopLat, currentStopLon])
-        : routeLayer.getBounds();
-      map.fitBounds(bounds, { padding: [28, 28] });
-    } catch { /* fitBounds失敗は無視 */ }
+    if (!vehicleZoomedAt2Stops) {
+      try {
+        const bounds = currentStopLat
+          ? routeLayer.getBounds().extend([currentStopLat, currentStopLon])
+          : routeLayer.getBounds();
+        map.fitBounds(bounds, { padding: [28, 28] });
+      } catch { /* fitBounds失敗は無視 */ }
+    }
 
     // fitBounds のズームアニメーション完了後にネオンアニメーション開始
     // （アニメーション中にパス長が変わると途中から始まってしまうため）
@@ -654,6 +629,18 @@ async function updateVehicleMarker(tripId, lineColor) {
         .bindTooltip(t('vehicleLive'), { direction: 'top', offset: [0, -6], className: 'stop-tooltip' });
     }
     updateVehiclePanel(pos, lineColor);
+
+    // 2つ前のバス停に到達したら、バスの現在位置と選択中のバス停が収まるよう拡大（一度だけ）
+    const proximity = calcStopsAway(pos);
+    if (proximity && !proximity.passed && !proximity.atStop &&
+        proximity.stopsAway <= 2 && !vehicleZoomedAt2Stops &&
+        currentStopLat != null && currentStopLon != null) {
+      vehicleZoomedAt2Stops = true;
+      map.fitBounds(
+        L.latLngBounds([[pos.lat, pos.lon], [currentStopLat, currentStopLon]]),
+        { padding: [48, 48], maxZoom: 17 }
+      );
+    }
   } catch {
     updateVehiclePanel(null);
   }
@@ -669,6 +656,7 @@ function stopVehicleTracking() {
   if (vehicleRefreshTimer) { clearInterval(vehicleRefreshTimer); vehicleRefreshTimer = null; }
   if (vehicleMarker) { map.removeLayer(vehicleMarker); vehicleMarker = null; }
   updateVehiclePanel(null);
+  vehicleZoomedAt2Stops = false;
 }
 
 // ── GPS / Nearby stops ───────────────────────────────────────────────────────
@@ -738,9 +726,124 @@ let searchTimer = null;
 searchInput.addEventListener('input', () => {
   clearTimeout(searchTimer);
   const q = searchInput.value.trim();
-  if (q.length < 2) { stopList.innerHTML = ''; stopList.classList.remove('visible'); return; }
-  searchTimer = setTimeout(() => fetchStops(q), 300);
+  if (q.length < 1) { stopList.innerHTML = ''; stopList.classList.remove('visible'); return; }
+  if (currentTab === 'route') {
+    searchTimer = setTimeout(() => fetchRoutes(q), 300);
+  } else {
+    if (q.length < 2) { stopList.innerHTML = ''; stopList.classList.remove('visible'); return; }
+    searchTimer = setTimeout(() => fetchStops(q), 300);
+  }
 });
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  currentTab = tab;
+  document.getElementById('tab-stop').classList.toggle('active', tab === 'stop');
+  document.getElementById('tab-route').classList.toggle('active', tab === 'route');
+  stopList.innerHTML = '';
+  stopList.classList.remove('visible');
+  searchInput.value = '';
+  searchInput.placeholder = tab === 'route' ? t('routeSearchPlaceholder') : t('searchPlaceholder');
+  document.getElementById('gps-btn').style.display = tab === 'route' ? 'none' : '';
+  currentRouteId = null;
+  currentRouteData = null;
+  document.getElementById('route-stops-panel').style.display = 'none';
+}
+
+// ── Route search ──────────────────────────────────────────────────────────────
+async function fetchRoutes(q) {
+  try {
+    const res = await fetch(`${API}/api/routes/search?q=${encodeURIComponent(q)}`);
+    renderRouteList(await res.json());
+  } catch { showError(t('serverError')); }
+}
+
+function renderRouteList(routes) {
+  if (!routes.length) {
+    stopList.innerHTML = `<div class="stop-item"><span style="color:var(--muted);font-size:13px">${t('noRoutesFound')}</span></div>`;
+    stopList.classList.add('visible');
+    return;
+  }
+  stopList.innerHTML = routes.map(r => {
+    const bg = resolveRouteColor(r.route_short_name, r.route_color) || r.route_color || 'var(--accent2)';
+    const fg = r.route_text_color || '#fff';
+    return `
+      <div class="stop-item route-list-item" onclick="selectRoute('${escAttr(r.route_id)}','${escAttr(r.route_short_name)}','${escAttr(r.route_color)}','${escAttr(r.route_text_color)}')">
+        <span class="route-list-badge" style="background:${bg};color:${fg}">${escHtml(r.route_short_name)}</span>
+        <span class="route-list-name">${escHtml(r.route_long_name)}</span>
+      </div>`;
+  }).join('');
+  stopList.classList.add('visible');
+}
+
+async function selectRoute(routeId, routeShort, routeColor, routeTextColor) {
+  currentRouteId = routeId;
+  currentRouteDirection = 0;
+  stopList.classList.remove('visible');
+  const panel = document.getElementById('route-stops-panel');
+  panel.style.display = 'block';
+  panel.innerHTML = `<div class="state-msg"><span class="icon">⏳</span><p>${t('mapLoading')}</p></div>`;
+  try {
+    const [res0, res1] = await Promise.all([
+      fetch(`${API}/api/routes/${encodeURIComponent(routeId)}/stops?direction=0`),
+      fetch(`${API}/api/routes/${encodeURIComponent(routeId)}/stops?direction=1`),
+    ]);
+    const data0 = res0.ok ? await res0.json() : null;
+    const data1 = res1.ok ? await res1.json() : null;
+    currentRouteData = { routeId, routeShort, routeColor, routeTextColor, directions: [data0, data1] };
+    renderRouteStops();
+  } catch { panel.innerHTML = `<div class="state-msg"><p>${t('fetchError')}</p></div>`; }
+}
+
+function renderRouteStops() {
+  const panel = document.getElementById('route-stops-panel');
+  const { routeShort, routeColor, routeTextColor, directions } = currentRouteData;
+  const bg = resolveRouteColor(routeShort, routeColor) || routeColor || 'var(--accent2)';
+  const fg = routeTextColor || '#fff';
+  const d = currentRouteDirection;
+  const data = directions[d];
+  if (!data) { panel.innerHTML = `<div class="state-msg"><p>${t('fetchError')}</p></div>`; return; }
+
+  const dirButtons = [1, 0].map(i => {
+    if (!directions[i]) return '';
+    const label = i === 0 ? t('routeDir0') : t('routeDir1');
+    const active = i === d ? ' active' : '';
+    return `<button class="route-dir-btn${active}" onclick="switchRouteDirection(${i})">${escHtml(label)}</button>`;
+  }).join('');
+
+  const stopItems = data.stops.map((s, i) => {
+    const isLast = i === data.stops.length - 1;
+    const routesJson = escAttr(JSON.stringify(s.routes || []));
+    return `
+      <div class="route-stop-item${isLast ? ' last' : ''}"
+           data-routes="${routesJson}"
+           onclick="selectStop('${escAttr(s.stop_id)}','${escAttr(s.stop_name)}','${s.stop_lat}','${s.stop_lon}',false,JSON.parse(this.dataset.routes))">
+        <div class="route-stop-line-wrap">
+          ${i > 0 ? `<div class="route-stop-line" style="background:${bg}"></div>` : '<div class="route-stop-line-spacer"></div>'}
+          <div class="route-stop-dot" style="border-color:${bg}"></div>
+          ${!isLast ? `<div class="route-stop-line" style="background:${bg}"></div>` : '<div class="route-stop-line-spacer"></div>'}
+        </div>
+        <span class="route-stop-name">${escHtml(s.stop_name)}</span>
+      </div>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <div class="route-stops-header">
+      <div class="route-stops-title">
+        <span class="route-stops-badge" style="background:${bg};color:${fg}">${escHtml(routeShort)}</span>
+        ${data.stops.length >= 2
+          ? `<span class="route-stops-headsign">${escHtml(data.stops[0].stop_name)} — ${escHtml(data.stops[data.stops.length - 1].stop_name)}</span>`
+          : data.headsign ? `<span class="route-stops-headsign">${escHtml(data.headsign)}</span>` : ''}
+      </div>
+      <div class="route-dir-btns">${dirButtons}</div>
+    </div>
+    <div class="route-stops-list">${stopItems}</div>`;
+}
+
+function switchRouteDirection(dir) {
+  currentRouteDirection = dir;
+  renderRouteStops();
+}
 
 async function fetchStops(q) {
   try {
@@ -771,20 +874,54 @@ function renderStopList(stops, showDistance = false) {
     const distLabel = showDistance && s.distance_m != null
       ? `<span class="stop-dist">${s.distance_m}m</span>`
       : `<span class="stop-id">#${s.stop_id}</span>`;
+    const routeBadges = s.routes && s.routes.length
+      ? `<div class="stop-route-badges">${s.routes.map(r => {
+          const bg = resolveRouteColor(r.name, r.color) || r.color || '';
+          const fg = r.text_color || (bg ? '#fff' : '');
+          const style = bg ? `style="background:${bg};border-color:${bg};color:${fg || '#fff'}"` : '';
+          return `<span class="stop-route-badge" ${style}>${escHtml(r.name)}</span>`;
+        }).join('')}</div>`
+      : '';
+    const routesJson = escAttr(JSON.stringify(s.routes || []));
+    const isFav = isFavorite(String(s.stop_id));
+    const favStar = isFav ? `<span class="stop-fav-star" title="Favorited">★</span>` : '';
     return `
-      <div class="stop-item" onclick="selectStop('${s.stop_id}','${escAttr(s.stop_name)}','${s.stop_lat}','${s.stop_lon}',${s.is_terminal})">
+      <div class="stop-item" onclick="selectStop('${s.stop_id}','${escAttr(s.stop_name)}','${s.stop_lat}','${s.stop_lon}',${s.is_terminal},JSON.parse(this.dataset.routes))" data-routes="${routesJson}">
         ${icon}
-        <span class="stop-name">${escHtml(s.stop_name)}</span>
-        ${platforms}
-        ${distLabel}
+        <div class="stop-item-main">
+          <div class="stop-item-top">
+            <span class="stop-name">${escHtml(s.stop_name)}</span>
+            ${favStar}
+            ${platforms}
+            ${distLabel}
+          </div>
+          ${routeBadges}
+        </div>
       </div>`;
   }).join('');
   stopList.classList.add('visible');
 }
 
 // ── Select stop ──────────────────────────────────────────────────────────────
-function selectStop(stopId, stopName, lat, lon, isTerminal = false) {
+function renderStopHeaderRoutes(routes) {
+  const routesEl = document.getElementById('stop-header-routes');
+  if (routes && routes.length) {
+    routesEl.innerHTML = routes.map(r => {
+      const bg = resolveRouteColor(r.name, r.color) || r.color || '';
+      const fg = r.text_color || (bg ? '#fff' : '');
+      const style = bg ? `style="background:${bg};border-color:${bg};color:${fg || '#fff'}"` : '';
+      return `<span class="stop-header-route-badge" ${style}>${escHtml(r.name)}</span>`;
+    }).join('');
+    routesEl.style.display = 'flex';
+  } else {
+    routesEl.innerHTML = '';
+    routesEl.style.display = 'none';
+  }
+}
+
+function selectStop(stopId, stopName, lat, lon, isTerminal = false, routes = []) {
   currentStopId = stopId;
+  currentStopRoutes = routes;
   currentIsTerminal = isTerminal;
   currentIsNameGrouped = !isTerminal && !!(nameGroupedStopMap[stopId] && nameGroupedStopMap[stopId].length > 1);
   currentGroupedStopIds = currentIsNameGrouped ? nameGroupedStopMap[stopId] : [];
@@ -801,14 +938,34 @@ function selectStop(stopId, stopName, lat, lon, isTerminal = false) {
   searchInput.placeholder = 'Search for a bus stop…';
 
   document.getElementById('stop-header-name').textContent = stopName;
-  document.getElementById('stop-header-id').textContent = `Stop #${stopId}`;
-  document.getElementById('stop-header-coords').textContent = `${currentStopLat.toFixed(4)}, ${currentStopLon.toFixed(4)}`;
+  renderStopHeaderRoutes(routes);
+
+  // バックエンドから最新の routes を取得して更新（お気に入り等で routes が空の場合も対応）
+  fetch(`${API}/api/stops/${encodeURIComponent(stopId)}`)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (data && data.routes && data.routes.length) {
+        currentStopRoutes = data.routes;
+        renderStopHeaderRoutes(data.routes);
+        // お気に入りに保存済みならルート情報を最新に更新
+        const favs = loadFavorites();
+        const fi = favs.findIndex(f => f.stop_id === stopId);
+        if (fi >= 0) {
+          favs[fi].routes = data.routes;
+          saveFavorites(favs);
+        }
+      }
+    }).catch(() => {});
   document.getElementById('stop-header').classList.add('visible');
   renderFavBtn();
   renderFavorites();
   document.getElementById('main-panel').classList.add('visible');
 
   setTimeout(() => map.invalidateSize(), 50);
+
+  if (currentTab === 'route') {
+    setTimeout(() => document.getElementById('stop-header').scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  }
 
   placeStopMarker(currentStopLat, currentStopLon, stopName);
   clearRoute();
@@ -916,11 +1073,12 @@ async function fetchArrivals(stopId) {
     list.classList.add('refreshing');
   }
   try {
+    const dp = demoMode ? '?demo=true' : '';
     const endpoint = currentIsTerminal
-      ? `${API}/api/terminal/${stopId}/arrivals`
+      ? `${API}/api/terminal/${stopId}/arrivals${dp}`
       : currentIsNameGrouped
-        ? `${API}/api/stops/multi/arrivals?ids=${currentGroupedStopIds.join(',')}`
-        : `${API}/api/stops/${stopId}/arrivals`;
+        ? `${API}/api/stops/multi/arrivals?ids=${currentGroupedStopIds.join(',')}${demoMode ? '&demo=true' : ''}`
+        : `${API}/api/stops/${stopId}/arrivals${dp}`;
     const res = await fetch(endpoint);
     const data = await res.json();
     if (currentIsNameGrouped) {
@@ -1139,6 +1297,14 @@ function startAutoRefresh(stopId) {
   scheduleNextRefresh(stopId);
 }
 
+function toggleDemoMode() {
+  demoMode = !demoMode;
+  const btn = document.getElementById('demo-mode-toggle');
+  btn.classList.toggle('active', demoMode);
+  document.getElementById('demo-banner').style.display = demoMode ? 'flex' : 'none';
+  if (currentStopId) fetchArrivals(currentStopId);
+}
+
 function toggleAutoRefresh() {
   autoRefreshEnabled = !autoRefreshEnabled;
   const btn = document.getElementById('auto-refresh-toggle');
@@ -1315,15 +1481,15 @@ async function fetchAlerts() {
     alertsCache = [];
   }
 
-  const bar = document.getElementById('alert-bar');
+  const btn = document.getElementById('alert-btn');
   const badge = document.getElementById('alert-count-badge');
   const count = alertsCache.length;
 
   if (count > 0) {
-    bar.style.display = 'block';
+    btn.style.display = '';
     badge.textContent = count;
   } else {
-    bar.style.display = 'none';
+    btn.style.display = 'none';
   }
 }
 
@@ -1390,6 +1556,13 @@ function renderAlertPanel() {
 
   list.innerHTML = filterBar + countLabel + items;
 }
+
+// 起動時設定を取得（デモモードボタン表示制御）
+fetch(`${API}/api/config`).then(r => r.json()).then(cfg => {
+  document.getElementById('demo-mode-toggle').style.display = cfg.demo_enabled ? '' : 'none';
+}).catch(() => {
+  document.getElementById('demo-mode-toggle').style.display = 'none';
+});
 
 // アラートを起動時に取得し、以降5分ごとに更新
 fetchAlerts();
