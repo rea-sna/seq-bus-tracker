@@ -44,22 +44,6 @@ app.add_middleware(
 GTFS_DIR = os.path.join(os.path.dirname(__file__), "gtfs")
 
 GTFS_URL = "https://gtfsrt.api.translink.com.au/GTFS/SEQ_GTFS.zip"
-_SHAPES_CACHE_DIR = os.path.join(GTFS_DIR, "shapes_cache")
-_shape_mem_cache: dict = {}   # 直近アクセスしたシェイプのオンメモリキャッシュ
-_SHAPE_CACHE_MAX = 50
-
-def _get_shape_coords(shape_id: str):
-    """shape_idに対応する座標配列をディスクキャッシュから返す（最大50件をメモリに保持）"""
-    if shape_id in _shape_mem_cache:
-        return _shape_mem_cache[shape_id]
-    path = os.path.join(_SHAPES_CACHE_DIR, shape_id.replace("/", "__") + ".npy")
-    if not os.path.exists(path):
-        return None
-    coords = np.load(path)
-    if len(_shape_mem_cache) >= _SHAPE_CACHE_MAX:
-        _shape_mem_cache.pop(next(iter(_shape_mem_cache)))
-    _shape_mem_cache[shape_id] = coords
-    return coords
 
 def download_gtfs_if_needed():
     """gtfs/stops.txt がなければTranslinkからダウンロードして展開する"""
@@ -153,7 +137,7 @@ _stops_lon_arr: np.ndarray = np.array([], dtype=np.float32)
 
 try:
     stops_df, bus_routes_df, bus_trips_df, stop_times_df, calendar_df, calendar_dates_df = load_gtfs()
-    # shapes.txt は任意（なくても動く）。ディスクに書き出してメモリを節約
+    # shapes.txt は任意（なくても動く）。numpy dict で保持してメモリを削減
     shapes_path = f"{GTFS_DIR}/shapes.txt"
     if os.path.exists(shapes_path):
         _shapes_raw = pd.read_csv(
@@ -162,15 +146,14 @@ try:
             usecols=["shape_id", "shape_pt_sequence", "shape_pt_lat", "shape_pt_lon"],
         )
         _shapes_raw = _shapes_raw.sort_values(["shape_id", "shape_pt_sequence"])
-        os.makedirs(_SHAPES_CACHE_DIR, exist_ok=True)
-        _n_shapes = 0
-        for sid, grp in _shapes_raw.groupby("shape_id", sort=False):
-            coords = grp[["shape_pt_lat", "shape_pt_lon"]].values.astype(np.float32)
-            np.save(os.path.join(_SHAPES_CACHE_DIR, sid.replace("/", "__") + ".npy"), coords)
-            _n_shapes += 1
+        shapes_dict = {
+            sid: grp[["shape_pt_lat", "shape_pt_lon"]].values.astype(np.float32)
+            for sid, grp in _shapes_raw.groupby("shape_id", sort=False)
+        }
         del _shapes_raw
-        print(f"✅ GTFS loaded — {len(stops_df)} stops, {len(bus_routes_df)} bus routes, {_n_shapes} shapes (on-disk)")
+        print(f"✅ GTFS loaded — {len(stops_df)} stops, {len(bus_routes_df)} bus routes, {len(shapes_dict)} shapes")
     else:
+        shapes_dict = None
         print(f"✅ GTFS loaded — {len(stops_df)} stops, {len(bus_routes_df)} bus routes (no shapes.txt)")
     # trip ごとの最終停留所を辞書化（終着駅フィルタ用）
     last_stop_by_trip: dict = (
@@ -218,7 +201,7 @@ try:
         pass
 except FileNotFoundError as e:
     print(f"⚠️  GTFS files not found: {e}")
-    stops_df = bus_routes_df = bus_trips_df = stop_times_df = None
+    stops_df = bus_routes_df = bus_trips_df = stop_times_df = shapes_dict = None
     calendar_df = calendar_dates_df = None
     stop_routes_dict = {}
     last_stop_by_trip = {}
@@ -1306,9 +1289,9 @@ def get_route_stops(request: Request, route_id: str, direction: int = 0):
 @limiter.limit("30/minute")
 def get_shape(request: Request, shape_id: str):
     """ルート形状の座標列を返す"""
-    if not os.path.isdir(_SHAPES_CACHE_DIR):
+    if shapes_dict is None:
         raise HTTPException(404, "shapes.txt not loaded")
-    coords_arr = _get_shape_coords(shape_id)
+    coords_arr = shapes_dict.get(shape_id)
     if coords_arr is None:
         raise HTTPException(404, f"Shape not found: {shape_id}")
     return {"shape_id": shape_id, "coords": coords_arr.tolist()}
