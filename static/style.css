@@ -586,7 +586,8 @@ h1 span {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 6px;
+  min-height: 0;
 }
 
 .stop-header-route-badge {

@@ -67,21 +67,19 @@
     </div>
 
     <div id="stop-header">
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
-        <div class="stop-header-name" id="stop-header-name">—</div>
-        <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
-          <button class="fav-btn" id="fav-btn" onclick="toggleFavorite()" title="Add to favorites">☆</button>
-          <button class="refresh-btn" id="refresh-btn" onclick="refreshArrivals()" data-i18n="refreshBtnLabel">↺ Refresh</button>
-          <button class="toggle-btn active" id="auto-refresh-toggle" onclick="toggleAutoRefresh()">
-            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-            <span class="toggle-label" data-i18n="autoLabel">Auto</span>
-          </button>
-          <button class="demo-btn" id="demo-mode-toggle" onclick="toggleDemoMode()" title="Toggle demo mode" style="display:none;">
-            <span data-i18n="demoLabel">DEMO</span>
-          </button>
-        </div>
-      </div>
+      <div class="stop-header-name" id="stop-header-name">—</div>
       <div id="stop-header-routes" class="stop-header-routes"></div>
+      <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:12px;">
+        <button class="fav-btn" id="fav-btn" onclick="toggleFavorite()" title="Add to favorites">☆</button>
+        <button class="refresh-btn" id="refresh-btn" onclick="refreshArrivals()" data-i18n="refreshBtnLabel">↺ Refresh</button>
+        <button class="toggle-btn active" id="auto-refresh-toggle" onclick="toggleAutoRefresh()">
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-label" data-i18n="autoLabel">Auto</span>
+        </button>
+        <button class="demo-btn" id="demo-mode-toggle" onclick="toggleDemoMode()" title="Toggle demo mode" style="display:none;">
+          <span data-i18n="demoLabel">DEMO</span>
+        </button>
+      </div>
     </div>
 
     <div class="refresh-bar" id="refresh-bar">
