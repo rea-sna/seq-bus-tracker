@@ -23,6 +23,7 @@ from google.transit import gtfs_realtime_pb2
 import pandas as pd
 import numpy as np
 import requests
+import sqlite3
 import threading
 import time
 import os
@@ -42,13 +43,17 @@ app.add_middleware(
 
 # ── GTFS Static data ──────────────────────────────────────────────────────────
 GTFS_DIR = os.path.join(os.path.dirname(__file__), "gtfs")
-
+DB_PATH  = os.path.join(GTFS_DIR, "gtfs.db")
 GTFS_URL = "https://gtfsrt.api.translink.com.au/GTFS/SEQ_GTFS.zip"
+
 
 def download_gtfs_if_needed():
     """gtfs/stops.txt がなければTranslinkからダウンロードして展開する"""
     if os.path.exists(os.path.join(GTFS_DIR, "stops.txt")):
-        return  # すでにある場合はスキップ
+        return
+    # 再ダウンロード時はDBも削除して再構築
+    if os.path.exists(DB_PATH):
+        os.remove(DB_PATH)
     import zipfile
     os.makedirs(GTFS_DIR, exist_ok=True)
     zip_path = os.path.join(GTFS_DIR, "gtfs.zip")
@@ -65,144 +70,249 @@ def download_gtfs_if_needed():
         os.remove(zip_path)
         print("GTFS ready")
     except Exception as e:
-        # 失敗した場合は中途半端なファイルを削除
         if os.path.exists(zip_path):
             os.remove(zip_path)
         raise RuntimeError(f"Failed to download GTFS: {e}") from e
 
+
 download_gtfs_if_needed()
 
-def load_gtfs():
-    # ── stops: 不要カラムを除外、lat/lon を float32 に変換 ──
-    stops = pd.read_csv(
-        f"{GTFS_DIR}/stops.txt",
-        dtype=str,
-        usecols=lambda c: c in ["stop_id", "stop_code", "stop_name", "stop_lat", "stop_lon",
-                                 "location_type", "parent_station", "platform_code"]
-    ).fillna("")
-    stops["stop_lat"] = pd.to_numeric(stops["stop_lat"], errors="coerce").astype("float32").fillna(0.0)
-    stops["stop_lon"] = pd.to_numeric(stops["stop_lon"], errors="coerce").astype("float32").fillna(0.0)
-    for col in ["location_type", "parent_station", "platform_code"]:
-        if col in stops.columns:
-            stops[col] = stops[col].astype("category")
 
-    routes = pd.read_csv(f"{GTFS_DIR}/routes.txt", dtype=str).fillna("")
+# ── Thread-local SQLite connection ────────────────────────────────────────────
+_db_local = threading.local()
 
-    trips = pd.read_csv(
-        f"{GTFS_DIR}/trips.txt",
-        dtype=str,
-        usecols=lambda c: c in ["route_id", "service_id", "trip_id", "trip_headsign", "shape_id", "direction_id"]
-    ).fillna("")
 
-    # バスのみに絞る (route_type == "3")
-    bus_routes = routes[routes["route_type"] == "3"].copy()
-    bus_route_ids = set(bus_routes["route_id"])
-    bus_trips = trips[trips["route_id"].isin(bus_route_ids)].copy()
-    for col in ["route_id", "service_id", "trip_headsign", "shape_id"]:
-        if col in bus_trips.columns:
-            bus_trips[col] = bus_trips[col].astype("category")
+def get_db() -> sqlite3.Connection:
+    """スレッドローカルなSQLite接続を返す"""
+    if not hasattr(_db_local, "conn") or _db_local.conn is None:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        _db_local.conn = conn
+    return _db_local.conn
 
-    # ── stop_times: 必要カラムのみ・バス便のみ・category 型で省メモリ化 ──
-    # arrival_time は 100% 存在するため departure_time は不要
-    bus_trip_ids_set = set(bus_trips["trip_id"])
-    stop_times = pd.read_csv(
-        f"{GTFS_DIR}/stop_times.txt",
-        dtype={"trip_id": str, "stop_id": str, "arrival_time": str, "stop_sequence": "int16"},
-        usecols=["trip_id", "stop_id", "stop_sequence", "arrival_time"]
-    ).fillna("")
-    # バス以外の trip を除外してからカテゴリ化（エンコードを最小化）
-    stop_times = stop_times[stop_times["trip_id"].isin(bus_trip_ids_set)].copy()
-    for col in ["trip_id", "stop_id", "arrival_time"]:
-        stop_times[col] = stop_times[col].astype("category")
 
-    # calendar.txt と calendar_dates.txt を読む（翌日便の補完用）
-    calendar_df = None
-    calendar_dates_df = None
-    cal_path = f"{GTFS_DIR}/calendar.txt"
-    cal_dates_path = f"{GTFS_DIR}/calendar_dates.txt"
-    if os.path.exists(cal_path):
-        calendar_df = pd.read_csv(cal_path, dtype=str).fillna("")
-    if os.path.exists(cal_dates_path):
-        calendar_dates_df = pd.read_csv(cal_dates_path, dtype=str).fillna("")
+def _arrival_secs(time_str: str):
+    """'HH:MM:SS' を深夜0時からの秒数に変換（25時間表記対応）"""
+    try:
+        p = time_str.split(":")
+        return int(p[0]) * 3600 + int(p[1]) * 60 + int(p[2])
+    except Exception:
+        return None
 
-    if "direction_id" in bus_trips.columns:
-        bus_trips["direction_id"] = bus_trips["direction_id"].astype("category")
-    bus_trips  = bus_trips.set_index("trip_id")
-    bus_routes = bus_routes.set_index("route_id")
-    return stops, bus_routes, bus_trips, stop_times, calendar_df, calendar_dates_df
+
+def build_gtfs_db():
+    """GTFS CSVファイルからSQLite DBを構築する（DB未存在時のみ実行）"""
+    if os.path.exists(DB_PATH):
+        return
+    print("Building GTFS SQLite database...")
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        # stops
+        stops = pd.read_csv(f"{GTFS_DIR}/stops.txt", dtype=str).fillna("")
+        stops.to_sql("stops", conn, if_exists="replace", index=False)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_stops_parent ON stops(parent_station)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_stops_name ON stops(stop_name)")
+
+        # routes (バスのみ)
+        routes = pd.read_csv(f"{GTFS_DIR}/routes.txt", dtype=str).fillna("")
+        bus_routes = routes[routes["route_type"] == "3"].copy()
+        bus_routes.to_sql("routes", conn, if_exists="replace", index=False)
+
+        # trips (バスのみ)
+        trips = pd.read_csv(
+            f"{GTFS_DIR}/trips.txt", dtype=str,
+            usecols=lambda c: c in ["route_id", "service_id", "trip_id",
+                                    "trip_headsign", "shape_id", "direction_id"]
+        ).fillna("")
+        bus_route_ids_set = set(bus_routes["route_id"])
+        bus_trips = trips[trips["route_id"].isin(bus_route_ids_set)].copy()
+        bus_trip_ids_set = set(bus_trips["trip_id"])
+        bus_trips.to_sql("trips", conn, if_exists="replace", index=False)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_route   ON trips(route_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_service ON trips(service_id)")
+
+        # stop_times (バスのみ・チャンク処理・arrival_secs 追加)
+        print("  Importing stop_times (large file)...")
+        conn.execute("""CREATE TABLE stop_times (
+            trip_id TEXT, stop_id TEXT, stop_sequence INTEGER,
+            arrival_time TEXT, arrival_secs INTEGER
+        )""")
+        total_st = 0
+        for chunk in pd.read_csv(
+            f"{GTFS_DIR}/stop_times.txt",
+            dtype={"trip_id": str, "stop_id": str, "arrival_time": str, "stop_sequence": int},
+            usecols=["trip_id", "stop_id", "stop_sequence", "arrival_time"],
+            chunksize=200_000,
+        ):
+            chunk = chunk[chunk["trip_id"].isin(bus_trip_ids_set)].copy()
+            chunk["arrival_secs"] = chunk["arrival_time"].apply(_arrival_secs)
+            chunk = chunk.dropna(subset=["arrival_secs"])
+            chunk["arrival_secs"] = chunk["arrival_secs"].astype(int)
+            chunk.to_sql("stop_times", conn, if_exists="append", index=False)
+            total_st += len(chunk)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_st_stop ON stop_times(stop_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_st_trip ON stop_times(trip_id)")
+        print(f"  {total_st} stop_times rows imported")
+
+        # shapes
+        shapes_path = f"{GTFS_DIR}/shapes.txt"
+        if os.path.exists(shapes_path):
+            print("  Importing shapes...")
+            pd.read_csv(
+                shapes_path,
+                dtype={"shape_id": str, "shape_pt_sequence": int},
+                usecols=["shape_id", "shape_pt_sequence", "shape_pt_lat", "shape_pt_lon"],
+            ).to_sql("shapes", conn, if_exists="replace", index=False)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_shapes ON shapes(shape_id, shape_pt_sequence)")
+
+        # calendar
+        cal_path = f"{GTFS_DIR}/calendar.txt"
+        if os.path.exists(cal_path):
+            pd.read_csv(cal_path, dtype=str).fillna("").to_sql(
+                "calendar", conn, if_exists="replace", index=False
+            )
+
+        # calendar_dates
+        cal_dates_path = f"{GTFS_DIR}/calendar_dates.txt"
+        if os.path.exists(cal_dates_path):
+            pd.read_csv(cal_dates_path, dtype=str).fillna("").to_sql(
+                "calendar_dates", conn, if_exists="replace", index=False
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_caldates ON calendar_dates(date, exception_type)")
+
+        # last_stops テーブル（trip_id → 最終 stop_id）
+        print("  Computing last stops...")
+        conn.execute("""
+            CREATE TABLE last_stops AS
+            SELECT st.trip_id, st.stop_id AS last_stop_id
+            FROM stop_times st
+            INNER JOIN (
+                SELECT trip_id, MAX(stop_sequence) AS max_seq
+                FROM stop_times GROUP BY trip_id
+            ) mx ON st.trip_id = mx.trip_id AND st.stop_sequence = mx.max_seq
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_last_stops ON last_stops(trip_id)")
+
+        # stop_routes テーブル（stop_id → ユニーク路線リスト）
+        print("  Computing stop routes...")
+        conn.execute("""
+            CREATE TABLE stop_routes AS
+            SELECT DISTINCT st.stop_id, r.route_short_name, r.route_color, r.route_text_color
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            JOIN routes r ON t.route_id = r.route_id
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_stop_routes ON stop_routes(stop_id)")
+
+        conn.commit()
+        print("GTFS DB built.")
+
+        # 大容量CSVを削除してディスクを節約（DBに取り込み済み）
+        for fname in ["stop_times.txt", "shapes.txt"]:
+            p = os.path.join(GTFS_DIR, fname)
+            if os.path.exists(p):
+                os.remove(p)
+                print(f"  Deleted {fname} (imported to DB)")
+
+    except Exception as e:
+        conn.close()
+        if os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
+        raise RuntimeError(f"Failed to build GTFS DB: {e}") from e
+
+    conn.close()
+
+
+build_gtfs_db()
 
 # ── 近傍バス停検索用 numpy 配列（起動時に初期化） ────────────────────────────
 _stops_lat_arr: np.ndarray = np.array([], dtype=np.float32)
 _stops_lon_arr: np.ndarray = np.array([], dtype=np.float32)
 
 try:
-    stops_df, bus_routes_df, bus_trips_df, stop_times_df, calendar_df, calendar_dates_df = load_gtfs()
-    # shapes.txt は任意（なくても動く）。numpy dict で保持してメモリを削減
-    shapes_path = f"{GTFS_DIR}/shapes.txt"
-    if os.path.exists(shapes_path):
-        _shapes_raw = pd.read_csv(
-            shapes_path,
-            dtype={"shape_id": str, "shape_pt_sequence": int},
-            usecols=["shape_id", "shape_pt_sequence", "shape_pt_lat", "shape_pt_lon"],
-        )
-        _shapes_raw = _shapes_raw.sort_values(["shape_id", "shape_pt_sequence"])
-        shapes_dict = {
-            sid: grp[["shape_pt_lat", "shape_pt_lon"]].values.astype(np.float32)
-            for sid, grp in _shapes_raw.groupby("shape_id", sort=False)
+    _boot = sqlite3.connect(DB_PATH)
+    _boot.row_factory = sqlite3.Row
+
+    # stops（小さいので全件メモリに保持）
+    stops_df = pd.read_sql("SELECT * FROM stops", _boot)
+    stops_df["stop_lat"] = pd.to_numeric(stops_df["stop_lat"], errors="coerce").astype("float32").fillna(0.0)
+    stops_df["stop_lon"] = pd.to_numeric(stops_df["stop_lon"], errors="coerce").astype("float32").fillna(0.0)
+    for _col in ["location_type", "parent_station", "platform_code"]:
+        if _col in stops_df.columns:
+            stops_df[_col] = stops_df[_col].astype("category")
+
+    # routes（小さいのでメモリに保持）
+    bus_routes_df = pd.read_sql("SELECT * FROM routes", _boot).set_index("route_id")
+
+    # trips を辞書化（リアルタイム処理で O(1) アクセス）
+    _trip_rows = _boot.execute(
+        "SELECT trip_id, route_id, trip_headsign, shape_id, direction_id FROM trips"
+    ).fetchall()
+    trips_dict: dict = {
+        r["trip_id"]: {
+            "route_id":      r["route_id"]      or "",
+            "trip_headsign": r["trip_headsign"]  or "",
+            "shape_id":      r["shape_id"]       or "",
+            "direction_id":  r["direction_id"]   or "",
         }
-        del _shapes_raw
-        print(f"✅ GTFS loaded — {len(stops_df)} stops, {len(bus_routes_df)} bus routes, {len(shapes_dict)} shapes")
-    else:
-        shapes_dict = None
-        print(f"✅ GTFS loaded — {len(stops_df)} stops, {len(bus_routes_df)} bus routes (no shapes.txt)")
-    # trip ごとの最終停留所を辞書化（終着駅フィルタ用）
-    last_stop_by_trip: dict = (
-        stop_times_df
-        .sort_values("stop_sequence")
-        .groupby("trip_id", observed=True)["stop_id"]
-        .last()
-        .to_dict()
-    )
-    # stop_id → 路線情報リスト の辞書（バス停カード表示用）
-    _route_color_cols = [c for c in ["route_short_name", "route_color", "route_text_color"] if c in bus_routes_df.columns]
-    _st_routes = (
-        stop_times_df[["trip_id", "stop_id"]]
-        .drop_duplicates()
-        .merge(bus_trips_df[["route_id"]].reset_index(), on="trip_id", how="inner")
-        .merge(bus_routes_df[_route_color_cols].reset_index(), on="route_id", how="inner")
-    )
-    def _build_stop_routes(grp):
-        seen = {}
-        for _, row in grp.iterrows():
-            name = str(row["route_short_name"])
-            if name not in seen:
-                rc  = str(row.get("route_color",      "") or "")
-                rtc = str(row.get("route_text_color", "") or "")
-                seen[name] = {
-                    "name":       name,
-                    "color":      f"#{rc}"  if rc  else "",
-                    "text_color": f"#{rtc}" if rtc else "",
-                }
-        return sorted(seen.values(), key=lambda r: (not r["name"].isdigit(), r["name"].zfill(6) if r["name"].isdigit() else r["name"]))
-    stop_routes_dict: dict = {
-        sid: _build_stop_routes(grp)
-        for sid, grp in _st_routes.groupby("stop_id", observed=True)
+        for r in _trip_rows
     }
-    del _st_routes
-    # 近傍バス停検索用 numpy 配列を初期化
-    _stops_lat_arr = stops_df["stop_lat"].values  # float32
-    _stops_lon_arr = stops_df["stop_lon"].values  # float32
-    # ロード時の一時メモリを解放（Linux では malloc_trim でOSへ返却）
+    del _trip_rows
+
+    # last_stop_by_trip（終着駅フィルタ用）
+    _ls_rows = _boot.execute("SELECT trip_id, last_stop_id FROM last_stops").fetchall()
+    last_stop_by_trip: dict = {r["trip_id"]: r["last_stop_id"] for r in _ls_rows}
+    del _ls_rows
+
+    # stop_routes_dict（バス停カード表示用）
+    _sr_rows = _boot.execute(
+        "SELECT stop_id, route_short_name, route_color, route_text_color FROM stop_routes"
+    ).fetchall()
+    _sr_tmp: dict = {}
+    for r in _sr_rows:
+        sid  = str(r["stop_id"])
+        name = str(r["route_short_name"])
+        if sid not in _sr_tmp:
+            _sr_tmp[sid] = {}
+        if name not in _sr_tmp[sid]:
+            rc  = str(r["route_color"]      or "")
+            rtc = str(r["route_text_color"] or "")
+            _sr_tmp[sid][name] = {
+                "name":       name,
+                "color":      f"#{rc}"  if rc  else "",
+                "text_color": f"#{rtc}" if rtc else "",
+            }
+    stop_routes_dict: dict = {
+        sid: sorted(
+            routes.values(),
+            key=lambda r: (not r["name"].isdigit(),
+                           r["name"].zfill(6) if r["name"].isdigit() else r["name"])
+        )
+        for sid, routes in _sr_tmp.items()
+    }
+    del _sr_tmp, _sr_rows
+
+    _boot.close()
+
+    # numpy 配列を初期化
+    _stops_lat_arr = stops_df["stop_lat"].values
+    _stops_lon_arr = stops_df["stop_lon"].values
+
     gc.collect()
     try:
         import ctypes
         ctypes.CDLL("libc.so.6").malloc_trim(0)
     except Exception:
         pass
-except FileNotFoundError as e:
-    print(f"⚠️  GTFS files not found: {e}")
-    stops_df = bus_routes_df = bus_trips_df = stop_times_df = shapes_dict = None
-    calendar_df = calendar_dates_df = None
+
+    print(f"✅ GTFS loaded — {len(stops_df)} stops, {len(bus_routes_df)} bus routes, {len(trips_dict)} trips")
+
+except Exception as _e:
+    print(f"⚠️  GTFS load failed: {_e}")
+    stops_df = bus_routes_df = None
+    trips_dict = {}
     stop_routes_dict = {}
     last_stop_by_trip = {}
 
@@ -212,13 +322,14 @@ import datetime as _dt
 BRISBANE_TZ = _dt.timezone(_dt.timedelta(hours=10))
 
 # ── Realtime endpoints ────────────────────────────────────────────────────────
-TRIP_UPDATES_URL     = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates/Bus"
-SEQ_COMBINED_URL     = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ"
-VEHICLE_POS_URL      = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/VehiclePositions/Bus"
+TRIP_UPDATES_URL = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates/Bus"
+SEQ_COMBINED_URL = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ"
+VEHICLE_POS_URL  = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/VehiclePositions/Bus"
 
 # ── GTFS-RT feed cache (30s TTL) ─────────────────────────────────────────────
 _feed_cache: dict = {"data": None, "expires": 0.0}
 _feed_lock = threading.Lock()
+
 
 def get_feed() -> gtfs_realtime_pb2.FeedMessage:
     with _feed_lock:
@@ -232,9 +343,11 @@ def get_feed() -> gtfs_realtime_pb2.FeedMessage:
         _feed_cache["expires"] = time.time() + 30
         return feed
 
+
 # ── VehiclePositions feed cache (15s TTL) ────────────────────────────────────
 _vehicle_cache: dict = {"data": None, "expires": 0.0}
 _vehicle_lock = threading.Lock()
+
 
 def get_vehicle_feed() -> gtfs_realtime_pb2.FeedMessage:
     with _vehicle_lock:
@@ -248,9 +361,11 @@ def get_vehicle_feed() -> gtfs_realtime_pb2.FeedMessage:
         _vehicle_cache["expires"] = time.time() + 15
         return feed
 
+
 # ── SEQ combined feed cache (60s TTL, for alerts) ────────────────────────────
 _seq_cache: dict = {"data": None, "expires": 0.0}
 _seq_lock = threading.Lock()
+
 
 def get_seq_feed() -> gtfs_realtime_pb2.FeedMessage:
     with _seq_lock:
@@ -264,6 +379,7 @@ def get_seq_feed() -> gtfs_realtime_pb2.FeedMessage:
         _seq_cache["expires"] = time.time() + 60
         return feed
 
+
 CAUSE_NAMES = {
     1: "Unknown cause", 2: "Other cause", 3: "Technical problem", 4: "Strike",
     5: "Demonstration", 6: "Accident", 7: "Holiday", 8: "Weather",
@@ -275,6 +391,7 @@ EFFECT_NAMES = {
     7: "Other effect", 8: "Unknown effect", 9: "Stop moved", 10: "No effect",
 }
 
+
 def _get_translated_text(translated) -> str:
     if not translated.translation:
         return ""
@@ -282,6 +399,7 @@ def _get_translated_text(translated) -> str:
         if t.language in ("en", "en-AU", "en-au", ""):
             return t.text
     return translated.translation[0].text
+
 
 def _merge_routes(stop_id_list: list) -> list:
     """複数 stop_id の路線情報を統合してソート済みリストで返す"""
@@ -292,6 +410,7 @@ def _merge_routes(stop_id_list: list) -> list:
                 seen[r["name"]] = r
     return sorted(seen.values(), key=lambda r: (not r["name"].isdigit(), r["name"].zfill(6) if r["name"].isdigit() else r["name"]))
 
+
 # ── Demo mode helper ──────────────────────────────────────────────────────────
 def _demo_now() -> float:
     """デモ用基準時刻: 今日のブリスベン時間 08:00"""
@@ -300,122 +419,105 @@ def _demo_now() -> float:
     return datetime.datetime(today.year, today.month, today.day, 8, 0, 0,
                              tzinfo=BRISBANE_TZ).timestamp()
 
+
 # ── Static timetable fallback helper ─────────────────────────────────────────
 def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0):
     """
-    stop_times.txt から静的時刻を取得し、到着情報リストを返す。
+    SQLiteから静的時刻を取得し、到着情報リストを返す。
     day_offset=0 → 今日、day_offset=1 → 明日
     """
     import datetime
-    if stop_times_df is None or bus_trips_df is None:
+    if not os.path.exists(DB_PATH):
         return []
 
-    DAY_NAMES = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
+    DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
     target_date = datetime.datetime.now(BRISBANE_TZ).date() + datetime.timedelta(days=day_offset)
     target_str  = target_date.strftime("%Y%m%d")
     day_name    = DAY_NAMES[target_date.weekday()]
     base_ts     = datetime.datetime(target_date.year, target_date.month, target_date.day,
                                     tzinfo=BRISBANE_TZ).timestamp()
 
-    # 運行サービスIDを取得
-    active_service_ids = set()
-    if calendar_df is not None and not calendar_df.empty:
-        cal = calendar_df[
-            (calendar_df["start_date"] <= target_str) &
-            (calendar_df["end_date"]   >= target_str) &
-            (calendar_df[day_name] == "1")
-        ]
-        active_service_ids.update(cal["service_id"].tolist())
+    conn = get_db()
 
-    if calendar_dates_df is not None and not calendar_dates_df.empty:
-        # exception_type=1: 追加, 2: 除外
-        adds    = calendar_dates_df[(calendar_dates_df["date"] == target_str) & (calendar_dates_df["exception_type"] == "1")]
-        removes = calendar_dates_df[(calendar_dates_df["date"] == target_str) & (calendar_dates_df["exception_type"] == "2")]
-        active_service_ids.update(adds["service_id"].tolist())
-        active_service_ids -= set(removes["service_id"].tolist())
-
-    # 有効なtrip_idに絞る（bus_trips_dfはtrip_idがインデックス）
-    if active_service_ids:
-        valid_trips = bus_trips_df[bus_trips_df["service_id"].isin(active_service_ids)]
-    else:
-        valid_trips = bus_trips_df  # calendar がない場合は全trip対象
-
-    valid_trip_ids = set(valid_trips.index)
-
-    # 対象バス停の stop_times を取得
-    st = stop_times_df[
-        stop_times_df["stop_id"].isin([str(s) for s in stop_id_list]) &
-        stop_times_df["trip_id"].isin(valid_trip_ids)
-    ].copy()
-
-    if st.empty:
-        return []
-
-    # ── ベクトル化: 時刻文字列を unix タイムスタンプに変換 ──
-    # arrival_time は 100% 存在するため departure_time フォールバック不要
-    time_col = st["arrival_time"]
-    st = st[time_col != ""].copy()
-    if st.empty:
-        return []
-    time_col = time_col[st.index]
-
+    # 有効なservice_idを取得
+    active_ids: set = set()
     try:
-        parts = time_col.str.split(":", expand=True)[[0, 1, 2]].apply(pd.to_numeric, errors="coerce")
-        st["arr_ts"] = base_ts + parts[0] * 3600 + parts[1] * 60 + parts[2]
-        st = st.dropna(subset=["arr_ts"])
+        for r in conn.execute(
+            f"SELECT service_id FROM calendar WHERE start_date<=? AND end_date>=? AND {day_name}='1'",
+            (target_str, target_str)
+        ).fetchall():
+            active_ids.add(r[0])
+        for r in conn.execute(
+            "SELECT service_id FROM calendar_dates WHERE date=? AND exception_type='1'",
+            (target_str,)
+        ).fetchall():
+            active_ids.add(r[0])
+        for r in conn.execute(
+            "SELECT service_id FROM calendar_dates WHERE date=? AND exception_type='2'",
+            (target_str,)
+        ).fetchall():
+            active_ids.discard(r[0])
     except Exception:
-        return []
+        pass  # calendar テーブルがない場合は全trip対象
 
-    st = st[st["arr_ts"] > now]
-    if st.empty:
-        return []
+    stop_ph = ",".join("?" * len(stop_id_list))
 
-    # trip情報をmerge（インデックスをリセットしてtrip_idを列に戻す）
-    trip_meta_cols = ["route_id", "trip_headsign"] + (["shape_id"] if "shape_id" in valid_trips.columns else []) + (["direction_id"] if "direction_id" in valid_trips.columns else [])
-    trip_meta = valid_trips[trip_meta_cols].reset_index()
-    st = st.merge(trip_meta, on="trip_id", how="inner")
-    if st.empty:
-        return []
-
-    # route情報をmerge（インデックスをリセットしてroute_idを列に戻す）
-    route_meta_cols = ["route_short_name", "route_long_name"] + [
-        c for c in ["route_color", "route_text_color"] if c in bus_routes_df.columns
-    ]
-    route_meta = bus_routes_df[route_meta_cols].reset_index()
-    st = st.merge(route_meta, on="route_id", how="left")
-    # 終着駅フィルタ: 表示中のバス停がそのトリップの最終停留所なら除外
-    if last_stop_by_trip:
-        last_stops = st["trip_id"].map(last_stop_by_trip)
-        st = st[last_stops != st["stop_id"]]
-
-    st = st.sort_values("arr_ts").head(15)
-
-    def _str(val, default=""):
-        return str(val) if pd.notna(val) and val != "" else default
+    if active_ids:
+        svc_ph = ",".join("?" * len(active_ids))
+        rows = conn.execute(f"""
+            SELECT st.trip_id, st.stop_id, st.arrival_time, st.arrival_secs,
+                   t.route_id, t.trip_headsign, t.shape_id, t.direction_id,
+                   r.route_short_name, r.route_long_name, r.route_color, r.route_text_color
+            FROM stop_times st
+            JOIN trips t  ON st.trip_id  = t.trip_id
+            JOIN routes r ON t.route_id  = r.route_id
+            WHERE st.stop_id IN ({stop_ph})
+              AND t.service_id IN ({svc_ph})
+            ORDER BY st.arrival_secs
+        """, [*stop_id_list, *active_ids]).fetchall()
+    else:
+        rows = conn.execute(f"""
+            SELECT st.trip_id, st.stop_id, st.arrival_time, st.arrival_secs,
+                   t.route_id, t.trip_headsign, t.shape_id, t.direction_id,
+                   r.route_short_name, r.route_long_name, r.route_color, r.route_text_color
+            FROM stop_times st
+            JOIN trips t  ON st.trip_id = t.trip_id
+            JOIN routes r ON t.route_id = r.route_id
+            WHERE st.stop_id IN ({stop_ph})
+            ORDER BY st.arrival_secs
+        """, stop_id_list).fetchall()
 
     arrivals = []
-    for _, row in st.iterrows():
-        arr_ts = float(row["arr_ts"])
-        route_color      = _str(row.get("route_color"))
-        route_text_color = _str(row.get("route_text_color"))
-        shape_id         = _str(row.get("shape_id"))
+    for row in rows:
+        arr_ts  = base_ts + row["arrival_secs"]
+        if arr_ts <= now:
+            continue
+        trip_id = row["trip_id"]
+        stop_id = str(row["stop_id"])
+        # 終着駅フィルタ
+        if last_stop_by_trip.get(trip_id) == stop_id:
+            continue
+        rc  = str(row["route_color"]      or "")
+        rtc = str(row["route_text_color"] or "")
         arrivals.append({
-            "trip_id":          row["trip_id"],
-            "stop_id":          str(row["stop_id"]),
+            "trip_id":          trip_id,
+            "stop_id":          stop_id,
             "platform_code":    "",
-            "route_short_name": _str(row.get("route_short_name"), "?"),
-            "route_long_name":  _str(row.get("route_long_name")),
-            "headsign":         _str(row.get("trip_headsign")),
+            "route_short_name": str(row["route_short_name"] or "?"),
+            "route_long_name":  str(row["route_long_name"]  or ""),
+            "headsign":         str(row["trip_headsign"]    or ""),
             "arrival_time":     arr_ts,
             "minutes_until":    max(0, int((arr_ts - now) / 60)),
             "delay_seconds":    0,
-            "shape_id":         shape_id,
-            "route_color":      f"#{route_color}"      if route_color      else "",
-            "route_text_color": f"#{route_text_color}" if route_text_color else "",
-            "direction_id":     _str(row.get("direction_id")),
+            "shape_id":         str(row["shape_id"]         or ""),
+            "route_color":      f"#{rc}"  if rc  else "",
+            "route_text_color": f"#{rtc}" if rtc else "",
+            "direction_id":     str(row["direction_id"]     or ""),
             "is_static":        True,
             "day_offset":       day_offset,
         })
+        if len(arrivals) >= 15:
+            break
 
     return arrivals
 
@@ -459,7 +561,6 @@ def search_stops(request: Request, q: str = ""):
             continue
 
         if parent:
-            # ── ホームがあるターミナル ──  (keep existing terminal logic exactly)
             if parent in seen_parents:
                 continue
             seen_parents.add(parent)
@@ -490,51 +591,49 @@ def search_stops(request: Request, q: str = ""):
                 })
 
             results.append({
-                "stop_id":        parent,
-                "stop_name":      station_name,
-                "stop_lat":       station_lat,
-                "stop_lon":       station_lon,
-                "is_terminal":    True,
+                "stop_id":         parent,
+                "stop_name":       station_name,
+                "stop_lat":        station_lat,
+                "stop_lon":        station_lon,
+                "is_terminal":     True,
                 "is_name_grouped": False,
-                "stop_ids":       [],
-                "platforms":      platforms,
-                "routes":         _merge_routes([sib["stop_id"] for _, sib in siblings.iterrows()]),
+                "stop_ids":        [],
+                "platforms":       platforms,
+                "routes":          _merge_routes([sib["stop_id"] for _, sib in siblings.iterrows()]),
             })
         else:
-            # Collect for name grouping
             name = row["stop_name"]
             if name not in individual_by_name:
                 individual_by_name[name] = []
             individual_by_name[name].append(row)
 
-    # Process name-grouped individual stops
     for name, rows in individual_by_name.items():
         if len(rows) == 1:
             row = rows[0]
             results.append({
-                "stop_id":        str(row["stop_id"]),
-                "stop_name":      str(row["stop_name"]),
-                "stop_lat":       float(row["stop_lat"]),
-                "stop_lon":       float(row["stop_lon"]),
-                "is_terminal":    False,
+                "stop_id":         str(row["stop_id"]),
+                "stop_name":       str(row["stop_name"]),
+                "stop_lat":        float(row["stop_lat"]),
+                "stop_lon":        float(row["stop_lon"]),
+                "is_terminal":     False,
                 "is_name_grouped": False,
-                "stop_ids":       [],
-                "platforms":      [],
-                "routes":         _merge_routes([row["stop_id"]]),
+                "stop_ids":        [],
+                "platforms":       [],
+                "routes":          _merge_routes([row["stop_id"]]),
             })
         else:
             lats = [float(r["stop_lat"]) for r in rows]
             lons = [float(r["stop_lon"]) for r in rows]
             results.append({
-                "stop_id":        str(rows[0]["stop_id"]),
-                "stop_name":      name,
-                "stop_lat":       sum(lats) / len(lats),
-                "stop_lon":       sum(lons) / len(lons),
-                "is_terminal":    False,
+                "stop_id":         str(rows[0]["stop_id"]),
+                "stop_name":       name,
+                "stop_lat":        sum(lats) / len(lats),
+                "stop_lon":        sum(lons) / len(lons),
+                "is_terminal":     False,
                 "is_name_grouped": True,
-                "stop_ids":       [str(r["stop_id"]) for r in rows],
-                "platforms":      [],
-                "routes":         _merge_routes([r["stop_id"] for r in rows]),
+                "stop_ids":        [str(r["stop_id"]) for r in rows],
+                "platforms":       [],
+                "routes":          _merge_routes([r["stop_id"] for r in rows]),
             })
 
     return [r for r in results if r.get("routes")][:20]
@@ -547,7 +646,6 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
     if stops_df is None:
         raise HTTPException(503, "GTFS data not loaded")
 
-    # ── ベクトル化: 全バス停との距離を numpy で一括計算 ──
     p = np.pi / 180.0
     R = 6371000.0
     dlat = (_stops_lat_arr - lat) * p
@@ -556,7 +654,6 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
          + np.cos(lat * p) * np.cos(_stops_lat_arr * p) * np.sin(dlon / 2.0) ** 2)
     all_dists = 2.0 * R * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
 
-    # stop_id → 距離 マップ（親駅の距離参照用）
     sid_to_dist = dict(zip(stops_df["stop_id"].values, all_dists))
 
     has_parent   = "parent_station" in stops_df.columns
@@ -564,7 +661,6 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
     has_platform = "platform_code"  in stops_df.columns
     has_stopcode = "stop_code"      in stops_df.columns
 
-    # 親駅(location_type=1)を除外し、半径内の候補に絞る
     if has_loc_type:
         not_parent_mask = (stops_df["location_type"] != "1").values
     else:
@@ -574,7 +670,7 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
 
     results = []
     seen_parents = set()
-    individual_by_name = {}  # stop_name -> list of (row, dist)
+    individual_by_name = {}
 
     for _, row in candidate_df.iterrows():
         parent = row.get("parent_station", "") if has_parent else ""
@@ -591,7 +687,6 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
                 station_name = str(row["stop_name"])
                 station_lat  = float(row["stop_lat"])
                 station_lon  = float(row["stop_lon"])
-            # 親駅 stop_id の距離を使用（なければ子駅の距離で代替）
             dist = float(sid_to_dist.get(str(parent),
                          sid_to_dist.get(str(row["stop_id"]), 0.0)))
 
@@ -610,16 +705,16 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
                     "platform_code": str(pf or sc),
                 })
             results.append({
-                "stop_id":        str(parent),
-                "stop_name":      station_name,
-                "stop_lat":       station_lat,
-                "stop_lon":       station_lon,
-                "is_terminal":    True,
+                "stop_id":         str(parent),
+                "stop_name":       station_name,
+                "stop_lat":        station_lat,
+                "stop_lon":        station_lon,
+                "is_terminal":     True,
                 "is_name_grouped": False,
-                "stop_ids":       [],
-                "platforms":      platforms,
-                "routes":         _merge_routes([str(sib["stop_id"]) for _, sib in siblings.iterrows()]),
-                "distance_m":     round(dist),
+                "stop_ids":        [],
+                "platforms":       platforms,
+                "routes":          _merge_routes([str(sib["stop_id"]) for _, sib in siblings.iterrows()]),
+                "distance_m":      round(dist),
             })
         else:
             name = str(row["stop_name"])
@@ -632,32 +727,32 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
         if len(rows_dists) == 1:
             row, dist = rows_dists[0]
             results.append({
-                "stop_id":        str(row["stop_id"]),
-                "stop_name":      str(row["stop_name"]),
-                "stop_lat":       float(row["stop_lat"]),
-                "stop_lon":       float(row["stop_lon"]),
-                "is_terminal":    False,
+                "stop_id":         str(row["stop_id"]),
+                "stop_name":       str(row["stop_name"]),
+                "stop_lat":        float(row["stop_lat"]),
+                "stop_lon":        float(row["stop_lon"]),
+                "is_terminal":     False,
                 "is_name_grouped": False,
-                "stop_ids":       [],
-                "platforms":      [],
-                "routes":         _merge_routes([row["stop_id"]]),
-                "distance_m":     round(dist),
+                "stop_ids":        [],
+                "platforms":       [],
+                "routes":          _merge_routes([row["stop_id"]]),
+                "distance_m":      round(dist),
             })
         else:
             min_dist = min(d for _, d in rows_dists)
             lats = [float(r["stop_lat"]) for r, _ in rows_dists]
             lons = [float(r["stop_lon"]) for r, _ in rows_dists]
             results.append({
-                "stop_id":        str(rows_dists[0][0]["stop_id"]),
-                "stop_name":      name,
-                "stop_lat":       sum(lats) / len(lats),
-                "stop_lon":       sum(lons) / len(lons),
-                "is_terminal":    False,
+                "stop_id":         str(rows_dists[0][0]["stop_id"]),
+                "stop_name":       name,
+                "stop_lat":        sum(lats) / len(lats),
+                "stop_lon":        sum(lons) / len(lons),
+                "is_terminal":     False,
                 "is_name_grouped": True,
-                "stop_ids":       [str(r["stop_id"]) for r, _ in rows_dists],
-                "platforms":      [],
-                "routes":         _merge_routes([r["stop_id"] for r, _ in rows_dists]),
-                "distance_m":     round(min_dist),
+                "stop_ids":        [str(r["stop_id"]) for r, _ in rows_dists],
+                "platforms":       [],
+                "routes":          _merge_routes([r["stop_id"] for r, _ in rows_dists]),
+                "distance_m":      round(min_dist),
             })
 
     results.sort(key=lambda x: x["distance_m"])
@@ -668,20 +763,18 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
 @limiter.limit("30/minute")
 def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
     """ターミナルの全ホームをまとめて取得し、platform_codeを付与して返す"""
-    if stops_df is None or bus_trips_df is None:
+    if stops_df is None or not trips_dict:
         raise HTTPException(503, "GTFS data not loaded")
 
     has_parent   = "parent_station" in stops_df.columns
     has_platform = "platform_code"  in stops_df.columns
     has_stopcode = "stop_code"      in stops_df.columns
 
-    # 配下のホームstop_idを取得
     if has_parent:
         children = stops_df[stops_df["parent_station"] == parent_id]
     else:
         children = stops_df[stops_df["stop_id"] == parent_id]
 
-    # stop_id → platform_code マップ
     platform_map = {}
     for _, r in children.iterrows():
         pf = r.get("platform_code", "") if has_platform else ""
@@ -696,7 +789,6 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
     arrivals = []
 
     if demo:
-        # デモモード: 静的時刻表のみ使用
         for day_offset in [0, 1]:
             static = get_static_arrivals(list(child_ids), now, day_offset)
             for a in static:
@@ -707,7 +799,6 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
                 break
         return arrivals[:20]
 
-    # リアルタイムフィード取得（キャッシュ使用）
     try:
         feed = get_feed()
     except requests.RequestException as e:
@@ -732,16 +823,15 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
                 continue
 
             trip_id = entity.trip_update.trip.trip_id
-            if trip_id not in bus_trips_df.index:
+            if trip_id not in trips_dict:
                 continue
-            # 終着駅（このホームがトリップの最終停留所）はスキップ
             if last_stop_by_trip.get(trip_id) == str(stu.stop_id):
                 continue
-            trip_row = bus_trips_df.loc[trip_id]
+            trip = trips_dict[trip_id]
 
-            route_id = trip_row["route_id"]
-            headsign = trip_row.get("trip_headsign", "") or ""
-            if route_id in bus_routes_df.index:
+            route_id = trip["route_id"]
+            headsign = trip["trip_headsign"]
+            if bus_routes_df is not None and route_id in bus_routes_df.index:
                 route_row        = bus_routes_df.loc[route_id]
                 route_short      = route_row["route_short_name"]
                 route_long       = route_row["route_long_name"]
@@ -760,15 +850,14 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
                 "arrival_time":     arrival_time,
                 "minutes_until":    max(0, int((arrival_time - now) / 60)),
                 "delay_seconds":    delay,
-                "shape_id":         trip_row.get("shape_id", "") or "",
+                "shape_id":         trip["shape_id"],
                 "route_color":      f"#{route_color}"      if route_color      else "",
                 "route_text_color": f"#{route_text_color}" if route_text_color else "",
-                "direction_id":     str(trip_row.get("direction_id", "") or ""),
+                "direction_id":     trip["direction_id"],
             })
 
     arrivals.sort(key=lambda x: x["arrival_time"])
 
-    # リアルタイム便がない場合は静的時刻でフォールバック（今日→明日の順）
     if not arrivals:
         for day_offset in [0, 1]:
             static = get_static_arrivals(list(child_ids), now, day_offset)
@@ -785,7 +874,7 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
 @limiter.limit("30/minute")
 def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
     """同名バス停グループの全stop_idの到着情報を返す"""
-    if stops_df is None or bus_trips_df is None:
+    if stops_df is None or not trips_dict:
         raise HTTPException(503, "GTFS data not loaded")
 
     stop_id_list = [s.strip() for s in ids.split(",") if s.strip()]
@@ -803,17 +892,20 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
                 for a in arrivals:
                     a["is_demo"] = True
                 break
-        # stop_directions は通常どおり算出
         stop_directions: dict = {}
-        if stop_times_df is not None and "direction_id" in bus_trips_df.columns:
+        if trips_dict and os.path.exists(DB_PATH):
+            conn = get_db()
             for sid in stop_id_list:
                 try:
-                    trip_ids = stop_times_df[stop_times_df["stop_id"].isin([sid])]["trip_id"].astype(str).unique()
-                    valid = bus_trips_df[bus_trips_df.index.isin(trip_ids)]
-                    if not valid.empty:
-                        dir_counts = valid["direction_id"].astype(str).value_counts()
-                        if not dir_counts.empty:
-                            stop_directions[sid] = str(dir_counts.index[0])
+                    row = conn.execute("""
+                        SELECT t.direction_id, COUNT(*) AS cnt
+                        FROM stop_times st
+                        JOIN trips t ON st.trip_id = t.trip_id
+                        WHERE st.stop_id=?
+                        GROUP BY t.direction_id ORDER BY cnt DESC LIMIT 1
+                    """, (sid,)).fetchone()
+                    if row:
+                        stop_directions[sid] = str(row["direction_id"] or "")
                 except Exception:
                     pass
         return {"arrivals": arrivals[:20], "stop_directions": stop_directions}
@@ -842,15 +934,15 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
                 continue
 
             trip_id = entity.trip_update.trip.trip_id
-            if trip_id not in bus_trips_df.index:
+            if trip_id not in trips_dict:
                 continue
             if last_stop_by_trip.get(trip_id) == str(stu.stop_id):
                 continue
-            trip_row = bus_trips_df.loc[trip_id]
+            trip = trips_dict[trip_id]
 
-            route_id = trip_row["route_id"]
-            headsign = trip_row.get("trip_headsign", "") or ""
-            if route_id in bus_routes_df.index:
+            route_id = trip["route_id"]
+            headsign = trip["trip_headsign"]
+            if bus_routes_df is not None and route_id in bus_routes_df.index:
                 route_row        = bus_routes_df.loc[route_id]
                 route_short      = route_row["route_short_name"]
                 route_long       = route_row["route_long_name"]
@@ -869,10 +961,10 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
                 "arrival_time":     arrival_time,
                 "minutes_until":    max(0, int((arrival_time - now) / 60)),
                 "delay_seconds":    delay,
-                "shape_id":         trip_row.get("shape_id", "") or "",
+                "shape_id":         trip["shape_id"],
                 "route_color":      f"#{route_color}"      if route_color      else "",
                 "route_text_color": f"#{route_text_color}" if route_text_color else "",
-                "direction_id":     str(trip_row.get("direction_id", "") or ""),
+                "direction_id":     trip["direction_id"],
             })
 
     arrivals.sort(key=lambda x: x["arrival_time"])
@@ -883,17 +975,20 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
             if arrivals:
                 break
 
-    # 各 stop_id の主要 direction_id を静的データから導出
     stop_directions: dict = {}
-    if stop_times_df is not None and "direction_id" in bus_trips_df.columns:
+    if trips_dict and os.path.exists(DB_PATH):
+        conn = get_db()
         for sid in stop_id_list:
             try:
-                trip_ids = stop_times_df[stop_times_df["stop_id"].isin([sid])]["trip_id"].astype(str).unique()
-                valid = bus_trips_df[bus_trips_df.index.isin(trip_ids)]
-                if not valid.empty:
-                    dir_counts = valid["direction_id"].astype(str).value_counts()
-                    if not dir_counts.empty:
-                        stop_directions[sid] = str(dir_counts.index[0])
+                row = conn.execute("""
+                    SELECT t.direction_id, COUNT(*) AS cnt
+                    FROM stop_times st
+                    JOIN trips t ON st.trip_id = t.trip_id
+                    WHERE st.stop_id=?
+                    GROUP BY t.direction_id ORDER BY cnt DESC LIMIT 1
+                """, (sid,)).fetchone()
+                if row:
+                    stop_directions[sid] = str(row["direction_id"] or "")
             except Exception:
                 pass
 
@@ -904,7 +999,7 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
 @limiter.limit("30/minute")
 def get_arrivals(request: Request, stop_id: str, demo: bool = False):
     """指定バス停の次のバス一覧（リアルタイム）"""
-    if bus_trips_df is None:
+    if not trips_dict:
         raise HTTPException(503, "GTFS data not loaded")
 
     now = _demo_now() if demo else time.time()
@@ -919,7 +1014,6 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
                 break
         return arrivals[:15]
 
-    # リアルタイムフィード取得（キャッシュ使用）
     try:
         feed = get_feed()
     except requests.RequestException as e:
@@ -933,7 +1027,6 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
             if str(stu.stop_id) != str(stop_id):
                 continue
 
-            # 到着 or 出発時刻・遅延秒数を取得
             delay = 0
             if stu.HasField("arrival") and stu.arrival.time:
                 arrival_time = stu.arrival.time
@@ -945,25 +1038,22 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
                 continue
 
             if arrival_time < now - 90:
-                continue  # 過去の便はスキップ
+                continue
 
             trip_id = entity.trip_update.trip.trip_id
-
-            # ルート情報を付加（インデックスで O(1) 参照）
-            if trip_id not in bus_trips_df.index:
+            if trip_id not in trips_dict:
                 continue
-            # 終着駅（このバス停がトリップの最終停留所）はスキップ
             if last_stop_by_trip.get(trip_id) == str(stop_id):
                 continue
-            trip_row = bus_trips_df.loc[trip_id]
+            trip = trips_dict[trip_id]
 
-            route_id = trip_row["route_id"]
-            headsign = trip_row.get("trip_headsign", "") or ""
-            if route_id in bus_routes_df.index:
+            route_id = trip["route_id"]
+            headsign = trip["trip_headsign"]
+            if bus_routes_df is not None and route_id in bus_routes_df.index:
                 route_row        = bus_routes_df.loc[route_id]
                 route_short      = route_row["route_short_name"]
                 route_long       = route_row["route_long_name"]
-                route_color      = route_row.get("route_color", "")      or ""
+                route_color      = route_row.get("route_color",      "") or ""
                 route_text_color = route_row.get("route_text_color", "") or ""
             else:
                 route_short, route_long, route_color, route_text_color = "?", "", "", ""
@@ -978,15 +1068,14 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
                 "arrival_time":     arrival_time,
                 "minutes_until":    max(0, int((arrival_time - now) / 60)),
                 "delay_seconds":    delay,
-                "shape_id":         trip_row.get("shape_id", "") or "",
+                "shape_id":         trip["shape_id"],
                 "route_color":      f"#{route_color}"      if route_color      else "",
                 "route_text_color": f"#{route_text_color}" if route_text_color else "",
-                "direction_id":     str(trip_row.get("direction_id", "") or ""),
+                "direction_id":     trip["direction_id"],
             })
 
     arrivals.sort(key=lambda x: x["arrival_time"])
 
-    # リアルタイム便がない場合は静的時刻でフォールバック（今日→明日の順）
     if not arrivals:
         for day_offset in [0, 1]:
             arrivals = get_static_arrivals([stop_id], now, day_offset)
@@ -1009,11 +1098,9 @@ def get_stop(request: Request, stop_id: str):
     parent   = str(r.get("parent_station", "") or "")
     loc_type = str(r.get("location_type",  "") or "")
     if parent:
-        # 子プラットホーム → 同じ親を持つ兄弟から集約
         sib_ids = stops_df[stops_df["parent_station"] == parent]["stop_id"].tolist()
         routes = _merge_routes(sib_ids)
     elif loc_type == "1":
-        # 親station自体が渡された場合（ターミナル）→ 子プラットホームから集約
         child_ids = stops_df[stops_df["parent_station"] == str(stop_id)]["stop_id"].tolist()
         routes = _merge_routes(child_ids) if child_ids else _merge_routes([str(r["stop_id"])])
     else:
@@ -1031,21 +1118,24 @@ def get_stop(request: Request, stop_id: str):
 @limiter.limit("30/minute")
 def get_trip_stops(request: Request, trip_id: str):
     """trip_idが通過するバス停の一覧を返す（静的時刻＋リアルタイム予測時刻＋通過済みフラグ付き）"""
-    if stop_times_df is None or stops_df is None:
+    if not os.path.exists(DB_PATH):
         raise HTTPException(503, "GTFS data not loaded")
 
-    # 静的 stop_times を sequence 順に取得
-    trip_st = stop_times_df[stop_times_df["trip_id"] == trip_id].sort_values("stop_sequence")
-    if trip_st.empty:
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT st.stop_id, st.stop_sequence, st.arrival_time, st.arrival_secs,
+               s.stop_name, s.stop_lat, s.stop_lon
+        FROM stop_times st
+        LEFT JOIN stops s ON s.stop_id = st.stop_id
+        WHERE st.trip_id = ?
+        ORDER BY st.stop_sequence
+    """, (trip_id,)).fetchall()
+
+    if not rows:
         raise HTTPException(404, f"Trip not found: {trip_id}")
 
-    merged = trip_st.merge(
-        stops_df[["stop_id", "stop_name", "stop_lat", "stop_lon"]],
-        on="stop_id", how="left"
-    )
-
     # リアルタイム予測時刻を取得（キャッシュ使用）
-    rt_times: dict[str, int] = {}  # stop_id -> predicted unix timestamp
+    rt_times: dict = {}
     try:
         feed = get_feed()
         for entity in feed.entity:
@@ -1061,43 +1151,35 @@ def get_trip_stops(request: Request, trip_id: str):
                     t = stu.departure.time
                 if t:
                     rt_times[str(stu.stop_id)] = t
-            break  # 対象tripが見つかったら終了
+            break
     except Exception:
-        pass  # リアルタイム取得失敗時は静的時刻のみ
+        pass
 
     now = time.time()
-
     stops_list = []
-    for _, row in merged.iterrows():
+    for row in rows:
         sid = str(row["stop_id"])
-        static_time_str = row.get("arrival_time", "") if "arrival_time" in merged.columns else ""
-
-        # リアルタイム予測があればそちらを優先
+        static_time_str = row["arrival_time"] or ""
         rt_unix = rt_times.get(sid)
         predicted_unix = rt_unix if rt_unix else None
 
-        # 通過済み判定: リアルタイム時刻が過去 or 静的時刻が現在より前
         passed = False
         if rt_unix:
             passed = rt_unix < now
-        elif static_time_str:
+        elif row["arrival_secs"] is not None:
             try:
-                # GTFS時刻は "HH:MM:SS"（25時間表記あり）
-                parts = static_time_str.split(":")
-                h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
                 import datetime
                 today = datetime.datetime.now(BRISBANE_TZ).date()
                 base = datetime.datetime(today.year, today.month, today.day, tzinfo=BRISBANE_TZ)
-                static_unix = base.timestamp() + h*3600 + m*60 + s
-                passed = static_unix < now
+                passed = (base.timestamp() + row["arrival_secs"]) < now
             except Exception:
                 pass
 
         stops_list.append({
             "stop_id":        sid,
-            "stop_name":      row.get("stop_name", ""),
-            "stop_lat":       float(row.get("stop_lat", 0.0) or 0.0),
-            "stop_lon":       float(row.get("stop_lon", 0.0) or 0.0),
+            "stop_name":      row["stop_name"] or "",
+            "stop_lat":       float(row["stop_lat"] or 0.0),
+            "stop_lon":       float(row["stop_lon"] or 0.0),
             "static_time":    static_time_str,
             "predicted_unix": predicted_unix,
             "passed":         passed,
@@ -1123,13 +1205,13 @@ def get_vehicle_position(request: Request, trip_id: str):
             continue
         pos = vp.position
         return {
-            "lat":              float(pos.latitude),
-            "lon":              float(pos.longitude),
-            "bearing":          float(pos.bearing),
-            "speed":            float(pos.speed),
-            "timestamp":        int(vp.timestamp) if vp.timestamp else None,
-            "current_stop_id":  vp.stop_id or None,
-            "current_status":   int(vp.current_status),  # 0=INCOMING_AT 1=STOPPED_AT 2=IN_TRANSIT_TO
+            "lat":             float(pos.latitude),
+            "lon":             float(pos.longitude),
+            "bearing":         float(pos.bearing),
+            "speed":           float(pos.speed),
+            "timestamp":       int(vp.timestamp) if vp.timestamp else None,
+            "current_stop_id": vp.stop_id or None,
+            "current_status":  int(vp.current_status),
         }
 
     return None
@@ -1152,7 +1234,6 @@ def get_alerts(request: Request):
             continue
         alert = entity.alert
 
-        # active_period フィルタ（設定がある場合のみ）
         if alert.active_period:
             active = False
             for period in alert.active_period:
@@ -1164,7 +1245,6 @@ def get_alerts(request: Request):
             if not active:
                 continue
 
-        # informed_entity から route/stop を収集
         route_ids = []
         stop_ids  = []
         for ie in alert.informed_entity:
@@ -1173,7 +1253,6 @@ def get_alerts(request: Request):
             if ie.stop_id:
                 stop_ids.append(ie.stop_id)
 
-        # route_id → route_short_name に変換
         route_short_names = []
         for rid in route_ids:
             if bus_routes_df is not None and rid in bus_routes_df.index:
@@ -1230,57 +1309,62 @@ def search_routes(request: Request, q: str = ""):
 @limiter.limit("30/minute")
 def get_route_stops(request: Request, route_id: str, direction: int = 0):
     """路線の代表便のバス停一覧を方向別に返す"""
-    if bus_trips_df is None or stop_times_df is None or stops_df is None:
+    if not trips_dict or not os.path.exists(DB_PATH):
         raise HTTPException(503, "GTFS data not loaded")
 
-    trips = bus_trips_df[bus_trips_df["route_id"] == route_id]
-    if trips.empty:
+    conn = get_db()
+
+    trip_rows = conn.execute(
+        "SELECT trip_id, trip_headsign, direction_id FROM trips WHERE route_id=?",
+        (route_id,)
+    ).fetchall()
+    if not trip_rows:
         raise HTTPException(404, "Route not found")
 
-    if "direction_id" in trips.columns:
-        dir_trips = trips[trips["direction_id"].astype(str) == str(direction)]
-        if dir_trips.empty:
-            dir_trips = trips
-    else:
-        dir_trips = trips
+    dir_trips = [r for r in trip_rows if str(r["direction_id"]) == str(direction)]
+    if not dir_trips:
+        dir_trips = trip_rows
 
-    # 最も停留所数が多い便を代表便として選択
-    trip_ids = set(dir_trips.index)
-    st_sub = stop_times_df[stop_times_df["trip_id"].isin(trip_ids)]
-    if st_sub.empty:
+    dir_trip_ids = [r["trip_id"] for r in dir_trips]
+    ph = ",".join("?" * len(dir_trip_ids))
+
+    best = conn.execute(f"""
+        SELECT trip_id, COUNT(*) AS cnt FROM stop_times
+        WHERE trip_id IN ({ph}) GROUP BY trip_id ORDER BY cnt DESC LIMIT 1
+    """, dir_trip_ids).fetchone()
+    if not best:
         raise HTTPException(404, "No stops found")
-    best_trip_id = st_sub.groupby("trip_id", observed=True).size().idxmax()
 
-    trip_st = stop_times_df[stop_times_df["trip_id"] == best_trip_id].sort_values("stop_sequence")
-    merged = trip_st.merge(
-        stops_df[["stop_id", "stop_name", "stop_lat", "stop_lon"]],
-        on="stop_id", how="left"
-    )
+    best_trip_id = best["trip_id"]
+    stops_rows = conn.execute("""
+        SELECT st.stop_id, s.stop_name, s.stop_lat, s.stop_lon
+        FROM stop_times st
+        LEFT JOIN stops s ON s.stop_id = st.stop_id
+        WHERE st.trip_id=?
+        ORDER BY st.stop_sequence
+    """, (best_trip_id,)).fetchall()
 
-    trip_row = bus_trips_df.loc[best_trip_id]
-    headsign = str(trip_row.get("trip_headsign", "") or "")
+    best_trip = next((r for r in dir_trips if r["trip_id"] == best_trip_id), None)
+    headsign = str(best_trip["trip_headsign"] or "") if best_trip else ""
 
-    # 両方向のheadsignを取得（方向切り替えUI用）
     direction_headsigns: dict = {}
-    if "direction_id" in trips.columns:
-        for d in ["0", "1"]:
-            d_trips = trips[trips["direction_id"].astype(str) == d]
-            if not d_trips.empty:
-                sample = d_trips.iloc[0]
-                direction_headsigns[d] = str(sample.get("trip_headsign", "") or "")
+    for d in ["0", "1"]:
+        d_trips = [r for r in trip_rows if str(r["direction_id"]) == d]
+        if d_trips:
+            direction_headsigns[d] = str(d_trips[0]["trip_headsign"] or "")
 
     return {
-        "headsign":           headsign,
+        "headsign":            headsign,
         "direction_headsigns": direction_headsigns,
         "stops": [
             {
-                "stop_id":   str(row["stop_id"]),
-                "stop_name": str(row["stop_name"]),
-                "stop_lat":  float(row["stop_lat"]),
-                "stop_lon":  float(row["stop_lon"]),
-                "routes":    _merge_routes([str(row["stop_id"])]),
+                "stop_id":   str(r["stop_id"]),
+                "stop_name": str(r["stop_name"] or ""),
+                "stop_lat":  float(r["stop_lat"] or 0.0),
+                "stop_lon":  float(r["stop_lon"] or 0.0),
+                "routes":    _merge_routes([str(r["stop_id"])]),
             }
-            for _, row in merged.iterrows()
+            for r in stops_rows
         ],
     }
 
@@ -1289,12 +1373,16 @@ def get_route_stops(request: Request, route_id: str, direction: int = 0):
 @limiter.limit("30/minute")
 def get_shape(request: Request, shape_id: str):
     """ルート形状の座標列を返す"""
-    if shapes_dict is None:
-        raise HTTPException(404, "shapes.txt not loaded")
-    coords_arr = shapes_dict.get(shape_id)
-    if coords_arr is None:
+    if not os.path.exists(DB_PATH):
+        raise HTTPException(404, "shapes not loaded")
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT shape_pt_lat, shape_pt_lon FROM shapes
+        WHERE shape_id=? ORDER BY shape_pt_sequence
+    """, (shape_id,)).fetchall()
+    if not rows:
         raise HTTPException(404, f"Shape not found: {shape_id}")
-    return {"shape_id": shape_id, "coords": coords_arr.tolist()}
+    return {"shape_id": shape_id, "coords": [[r["shape_pt_lat"], r["shape_pt_lon"]] for r in rows]}
 
 
 # ── App config ────────────────────────────────────────────────────────────────
