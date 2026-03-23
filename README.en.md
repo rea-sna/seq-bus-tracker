@@ -29,7 +29,8 @@ Real-time bus arrival information for South East Queensland, powered by Translin
 |---|---|
 | Backend | Python / FastAPI |
 | Frontend | Vanilla JS / Leaflet.js |
-| Data | Translink GTFS Static + GTFS-RT |
+| Data store | SQLite (GTFS static) + in-memory pandas DataFrames (stops / routes) |
+| Data source | Translink GTFS Static + GTFS-RT |
 | Deploy | Heroku / Render |
 
 ---
@@ -142,6 +143,9 @@ A `Procfile` is included. GTFS data is downloaded automatically on startup.
 ├── requirements.txt     # Python dependencies
 ├── Procfile             # Heroku start command
 ├── gtfs/                # GTFS static data (auto-downloaded, git-ignored)
+│   ├── stops.txt        # Raw CSV files (downloaded on first startup)
+│   ├── ...              # Other GTFS files
+│   └── gtfs.db          # SQLite database (auto-built on first startup)
 └── static/
     ├── index.html
     ├── style.css

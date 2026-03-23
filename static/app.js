@@ -529,6 +529,39 @@ function clearRoute() {
   if (currentStopLat) map.setView([currentStopLat, currentStopLon], 12);
 }
 
+function clearDisplay() {
+  clearTimeout(refreshTimer);
+  autoRefreshEnabled = true;
+  currentStopId = null;
+  currentIsTerminal = false;
+  currentStopLat = null;
+  currentStopLon = null;
+  activeCardIndex = null;
+  activeArrivalTripId = null;
+  showAllArrivals = false;
+  activeArrivalFilter = { platform: null, direction: null, route: null };
+  lastArrivals = [];
+
+  if (stopMarker) { map.removeLayer(stopMarker); stopMarker = null; }
+  clearRoute();
+  clearError();
+
+  document.getElementById('stop-header').classList.remove('visible');
+  document.getElementById('main-panel').classList.remove('visible');
+  document.getElementById('refresh-bar').classList.remove('visible');
+  document.getElementById('auto-refresh-toggle').classList.add('active');
+  document.getElementById('arrivals-list').innerHTML = '';
+  document.getElementById('arrivals-filter-bar').style.display = 'none';
+  document.getElementById('stop-header-name').textContent = '—';
+  document.getElementById('stop-header-routes').innerHTML = '';
+
+  searchInput.value = '';
+  searchInput.placeholder = t('searchPlaceholder');
+  stopList.classList.remove('visible');
+  stopList.innerHTML = '';
+  renderFavorites();
+}
+
 // ── Vehicle tracking ─────────────────────────────────────────────────────────
 function makeVehicleIcon(bearing, color) {
   const c = color || '#0099ff';
@@ -630,10 +663,10 @@ async function updateVehicleMarker(tripId, lineColor) {
     }
     updateVehiclePanel(pos, lineColor);
 
-    // 2つ前のバス停に到達したら、バスの現在位置と選択中のバス停が収まるよう拡大（一度だけ）
+    // 3つ前のバス停に到達したら（停車中も含む）、バスの現在位置と選択中のバス停が収まるよう拡大（一度だけ）
     const proximity = calcStopsAway(pos);
-    if (proximity && !proximity.passed && !proximity.atStop &&
-        proximity.stopsAway <= 2 && !vehicleZoomedAt2Stops &&
+    if (proximity && !proximity.passed && !vehicleZoomedAt2Stops &&
+        (proximity.atStop || proximity.stopsAway <= 3) &&
         currentStopLat != null && currentStopLon != null) {
       vehicleZoomedAt2Stops = true;
       map.fitBounds(

@@ -29,7 +29,8 @@
 |---|---|
 | バックエンド | Python / FastAPI |
 | フロントエンド | Vanilla JS / Leaflet.js |
-| データ | Translink GTFS Static + GTFS-RT |
+| データストア | SQLite（GTFSスタティック）+ メモリ内 pandas DataFrame（stops / routes） |
+| データソース | Translink GTFS Static + GTFS-RT |
 | デプロイ | Heroku / Render |
 
 ---
@@ -142,6 +143,9 @@ git push heroku main
 ├── requirements.txt     # Python依存パッケージ
 ├── Procfile             # Heroku起動コマンド
 ├── gtfs/                # GTFSスタティックデータ（自動DL・git管理外）
+│   ├── stops.txt        # 生CSV（初回起動時にDL）
+│   ├── ...              # その他GTFSファイル
+│   └── gtfs.db          # SQLite DB（初回起動時に自動生成）
 └── static/
     ├── index.html
     ├── style.css
