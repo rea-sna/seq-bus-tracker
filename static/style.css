@@ -2219,6 +2219,8 @@ footer {
   letter-spacing: 0.05em;
   color: var(--muted);
   padding-right: 2px;
+  display: inline-block;
+  width: 50px;
 }
 
 .arrivals-filter-chip {
