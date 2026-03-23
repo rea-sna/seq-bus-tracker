@@ -858,14 +858,18 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
 
     arrivals.sort(key=lambda x: x["arrival_time"])
 
-    if not arrivals:
+    # RT便が20件未満なら静的データで補完
+    if len(arrivals) < 20:
+        rt_trip_ids = {a["trip_id"] for a in arrivals}
         for day_offset in [0, 1]:
             static = get_static_arrivals(list(child_ids), now, day_offset)
             for a in static:
-                a["platform_code"] = platform_map.get(a["stop_id"], "")
+                if a["trip_id"] not in rt_trip_ids:
+                    a["platform_code"] = platform_map.get(a["stop_id"], "")
+                    arrivals.append(a)
             if static:
-                arrivals = static
                 break
+        arrivals.sort(key=lambda x: x["arrival_time"])
 
     return arrivals[:20]
 
@@ -969,11 +973,17 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
 
     arrivals.sort(key=lambda x: x["arrival_time"])
 
-    if not arrivals:
+    # RT便が20件未満なら静的データで補完
+    if len(arrivals) < 20:
+        rt_trip_ids = {a["trip_id"] for a in arrivals}
         for day_offset in [0, 1]:
-            arrivals = get_static_arrivals(stop_id_list, now, day_offset)
-            if arrivals:
+            static = get_static_arrivals(stop_id_list, now, day_offset)
+            for a in static:
+                if a["trip_id"] not in rt_trip_ids:
+                    arrivals.append(a)
+            if static:
                 break
+        arrivals.sort(key=lambda x: x["arrival_time"])
 
     stop_directions: dict = {}
     if trips_dict and os.path.exists(DB_PATH):
@@ -1076,11 +1086,17 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
 
     arrivals.sort(key=lambda x: x["arrival_time"])
 
-    if not arrivals:
+    # RT便が15件未満なら静的データで補完
+    if len(arrivals) < 15:
+        rt_trip_ids = {a["trip_id"] for a in arrivals}
         for day_offset in [0, 1]:
-            arrivals = get_static_arrivals([stop_id], now, day_offset)
-            if arrivals:
+            static = get_static_arrivals([stop_id], now, day_offset)
+            for a in static:
+                if a["trip_id"] not in rt_trip_ids:
+                    arrivals.append(a)
+            if static:
                 break
+        arrivals.sort(key=lambda x: x["arrival_time"])
 
     return arrivals[:15]
 
