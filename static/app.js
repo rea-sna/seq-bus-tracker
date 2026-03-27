@@ -95,6 +95,7 @@ const STRINGS = {
     noRoutesFound: 'No routes found',
     routeDir0: 'Outbound',
     routeDir1: 'Inbound',
+    rtUnavailable: 'Real-time data unavailable — showing scheduled times only.',
   },
   ja: {
     searchPlaceholder: 'バス停を検索…',
@@ -158,6 +159,7 @@ const STRINGS = {
     noRoutesFound: '路線が見つかりません',
     routeDir0: '下り',
     routeDir1: '上り',
+    rtUnavailable: 'リアルタイム情報を取得できません。時刻表の予定時刻を表示しています。',
   }
 };
 
@@ -529,6 +531,17 @@ function clearRoute() {
   if (currentStopLat) map.setView([currentStopLat, currentStopLon], 12);
 }
 
+function handleTitleClick() {
+  if (routeLayer !== null || activeArrivalTripId !== null) {
+    activeCardIndex = null;
+    activeArrivalTripId = null;
+    clearRoute();
+    renderArrivals(getFilteredArrivals(), showAllArrivals);
+  } else {
+    clearDisplay();
+  }
+}
+
 function clearDisplay() {
   clearTimeout(refreshTimer);
   autoRefreshEnabled = true;
@@ -542,6 +555,7 @@ function clearDisplay() {
   activeArrivalFilter = { platform: null, direction: null, route: null };
   lastArrivals = [];
 
+  setRtUnavailableBanner(false);
   if (stopMarker) { map.removeLayer(stopMarker); stopMarker = null; }
   clearRoute();
   clearError();
@@ -1113,17 +1127,14 @@ async function fetchArrivals(stopId) {
         ? `${API}/api/stops/multi/arrivals?ids=${currentGroupedStopIds.join(',')}${demoMode ? '&demo=true' : ''}`
         : `${API}/api/stops/${stopId}/arrivals${dp}`;
     const res = await fetch(endpoint);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    if (currentIsNameGrouped) {
-      lastArrivals = data.arrivals || [];
-      // 静的データから導出した方向情報で stopDirectionMap を初期化（未設定のみ）
-      if (data.stop_directions) {
-        for (const [sid, dir] of Object.entries(data.stop_directions)) {
-          if (stopDirectionMap[sid] === undefined) stopDirectionMap[sid] = dir;
-        }
+    lastArrivals = data.arrivals || [];
+    setRtUnavailableBanner(data.rt_available === false);
+    if (currentIsNameGrouped && data.stop_directions) {
+      for (const [sid, dir] of Object.entries(data.stop_directions)) {
+        if (stopDirectionMap[sid] === undefined) stopDirectionMap[sid] = dir;
       }
-    } else {
-      lastArrivals = data;
     }
     list.classList.remove('refreshing');
     renderFilterBar();
@@ -1172,6 +1183,7 @@ async function fetchArrivals(stopId) {
     }
   } catch {
     list.classList.remove('refreshing');
+    setRtUnavailableBanner(false);
     showError(t('fetchError'));
     if (!isRefresh) list.innerHTML = '';
   }
@@ -1481,6 +1493,13 @@ function toggleTimelineSection(header) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+function setRtUnavailableBanner(show) {
+  const el = document.getElementById('rt-unavailable-banner');
+  if (!el) return;
+  el.textContent = show ? t('rtUnavailable') : '';
+  el.classList.toggle('visible', show);
+}
+
 function showError(msg) {
   const el = document.getElementById('error-msg');
   el.textContent = `⚠ ${msg}`; el.classList.add('visible');
@@ -1553,12 +1572,20 @@ function renderAlertPanel() {
   // 全ルートタグを収集してフィルタバーを構築
   const allTags = [...new Set(alertsCache.flatMap(a => a.route_short_names))].sort();
 
+  const FILTER_COLLAPSE_THRESHOLD = 8;
+  const needsFilterCollapse = allTags.length > FILTER_COLLAPSE_THRESHOLD;
   const filterBar = allTags.length > 1 ? `
-    <div class="alert-filter-bar">
-      ${allTags.map(t => `
-        <button class="alert-filter-tag${alertFilterTag === t ? ' active' : ''}"
-                onclick="setAlertFilter('${escAttr(t)}')">${escHtml(t)}</button>
-      `).join('')}
+    <div class="alert-filter-wrap">
+      <div class="alert-filter-bar${needsFilterCollapse ? ' collapsed' : ''}" id="alert-filter-bar">
+        ${allTags.map(tag => `
+          <button class="alert-filter-tag${alertFilterTag === tag ? ' active' : ''}"
+                  onclick="setAlertFilter('${escAttr(tag)}')">${escHtml(tag)}</button>
+        `).join('')}
+      </div>
+      ${needsFilterCollapse ? `
+        <button class="alert-filter-toggle" id="alert-filter-toggle"
+                onclick="toggleAlertFilterBar(${allTags.length})">▾ ${allTags.length}</button>
+      ` : ''}
     </div>` : '';
 
   // フィルタ適用
@@ -1570,12 +1597,23 @@ function renderAlertPanel() {
     ? `<div class="alert-filter-count">${filtered.length} alert${filtered.length !== 1 ? 's' : ''} for ${escHtml(alertFilterTag)}</div>`
     : '';
 
+  const ROUTE_COLLAPSE_THRESHOLD = 6;
   const items = filtered.length ? filtered.map((a, i) => {
-    const routeTags = a.route_short_names.length
-      ? a.route_short_names.map(r => `
-          <button class="alert-route-tag${alertFilterTag === r ? ' active' : ''}"
-                  onclick="setAlertFilter('${escAttr(r)}')">${escHtml(r)}</button>`).join('')
-      : '';
+    const names = a.route_short_names;
+    let routeTags = '';
+    if (names.length) {
+      const makeTag = r => `<button class="alert-route-tag${alertFilterTag === r ? ' active' : ''}"
+              onclick="setAlertFilter('${escAttr(r)}')">${escHtml(r)}</button>`;
+      const needsCollapse = names.length > ROUTE_COLLAPSE_THRESHOLD;
+      const visible = needsCollapse ? names.slice(0, ROUTE_COLLAPSE_THRESHOLD) : names;
+      const hidden = needsCollapse ? names.slice(ROUTE_COLLAPSE_THRESHOLD) : [];
+      routeTags = visible.map(makeTag).join('');
+      if (needsCollapse) {
+        routeTags += `<button class="alert-routes-toggle" id="alert-routes-toggle-${i}"
+                  onclick="toggleAlertRoutes(${i}, ${hidden.length})">+${hidden.length}</button>
+          <div class="alert-routes-extra hidden" id="alert-routes-extra-${i}">${hidden.map(makeTag).join('')}</div>`;
+      }
+    }
     const metaTags = [a.cause, a.effect].filter(Boolean)
       .map(t => `<span class="alert-meta-tag">${escHtml(t)}</span>`).join('');
     return `
@@ -1588,6 +1626,21 @@ function renderAlertPanel() {
   }).join('') : `<div class="alert-empty">${t('alertNoneFor', escHtml(alertFilterTag))}</div>`;
 
   list.innerHTML = filterBar + countLabel + items;
+}
+
+function toggleAlertFilterBar(totalCount) {
+  const bar = document.getElementById('alert-filter-bar');
+  const btn = document.getElementById('alert-filter-toggle');
+  bar.classList.toggle('collapsed');
+  btn.textContent = bar.classList.contains('collapsed') ? `▾ ${totalCount}` : '▴';
+}
+
+function toggleAlertRoutes(index, hiddenCount) {
+  const extra = document.getElementById(`alert-routes-extra-${index}`);
+  const btn   = document.getElementById(`alert-routes-toggle-${index}`);
+  const expanding = extra.classList.contains('hidden');
+  extra.classList.toggle('hidden', !expanding);
+  btn.textContent = expanding ? '▴' : `+${hiddenCount}`;
 }
 
 // 起動時設定を取得（デモモードボタン表示制御）

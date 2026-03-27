@@ -324,6 +324,7 @@ BRISBANE_TZ = _dt.timezone(_dt.timedelta(hours=10))
 # ── Realtime endpoints ────────────────────────────────────────────────────────
 TRIP_UPDATES_URL = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates/Bus"
 SEQ_COMBINED_URL = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ"
+SEQ_ALERTS_URL   = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/Alerts"
 VEHICLE_POS_URL  = "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/VehiclePositions/Bus"
 
 # ── GTFS-RT feed cache (30s TTL) ─────────────────────────────────────────────
@@ -365,18 +366,35 @@ def get_vehicle_feed() -> gtfs_realtime_pb2.FeedMessage:
 # ── SEQ combined feed cache (60s TTL, for alerts) ────────────────────────────
 _seq_cache: dict = {"data": None, "expires": 0.0}
 _seq_lock = threading.Lock()
+_alerts_cache: dict = {"data": None, "expires": 0.0}
+_alerts_lock = threading.Lock()
+
+
+def _fetch_feed(url: str) -> gtfs_realtime_pb2.FeedMessage:
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+    feed = gtfs_realtime_pb2.FeedMessage()
+    feed.ParseFromString(resp.content)
+    return feed
 
 
 def get_seq_feed() -> gtfs_realtime_pb2.FeedMessage:
     with _seq_lock:
         if time.time() < _seq_cache["expires"] and _seq_cache["data"] is not None:
             return _seq_cache["data"]
-        resp = requests.get(SEQ_COMBINED_URL, timeout=10)
-        resp.raise_for_status()
-        feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(resp.content)
+        feed = _fetch_feed(SEQ_COMBINED_URL)
         _seq_cache["data"] = feed
         _seq_cache["expires"] = time.time() + 60
+        return feed
+
+
+def get_alerts_feed() -> gtfs_realtime_pb2.FeedMessage:
+    with _alerts_lock:
+        if time.time() < _alerts_cache["expires"] and _alerts_cache["data"] is not None:
+            return _alerts_cache["data"]
+        feed = _fetch_feed(SEQ_ALERTS_URL)
+        _alerts_cache["data"] = feed
+        _alerts_cache["expires"] = time.time() + 60
         return feed
 
 
@@ -797,12 +815,22 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
             if static:
                 arrivals = static
                 break
-        return arrivals[:20]
+        return {"arrivals": arrivals[:20], "rt_available": True}
 
+    rt_available = True
     try:
         feed = get_feed()
-    except requests.RequestException as e:
-        raise HTTPException(502, f"Translink API error: {e}")
+    except requests.RequestException:
+        rt_available = False
+        for day_offset in [0, 1]:
+            static = get_static_arrivals(list(child_ids), now, day_offset)
+            for a in static:
+                a["platform_code"] = platform_map.get(a["stop_id"], "")
+                arrivals.append(a)
+            if static:
+                break
+        arrivals.sort(key=lambda x: x["arrival_time"])
+        return {"arrivals": arrivals[:20], "rt_available": False}
 
     for entity in feed.entity:
         if not entity.HasField("trip_update"):
@@ -871,7 +899,7 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
                 break
         arrivals.sort(key=lambda x: x["arrival_time"])
 
-    return arrivals[:20]
+    return {"arrivals": arrivals[:20], "rt_available": rt_available}
 
 
 @app.get("/api/stops/multi/arrivals")
@@ -912,12 +940,20 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
                         stop_directions[sid] = str(row["direction_id"] or "")
                 except Exception:
                     pass
-        return {"arrivals": arrivals[:20], "stop_directions": stop_directions}
+        return {"arrivals": arrivals[:20], "stop_directions": stop_directions, "rt_available": True}
 
+    rt_available = True
     try:
         feed = get_feed()
-    except requests.RequestException as e:
-        raise HTTPException(502, f"Translink API error: {e}")
+    except requests.RequestException:
+        rt_available = False
+        for day_offset in [0, 1]:
+            static = get_static_arrivals(stop_id_list, now, day_offset)
+            if static:
+                arrivals = static
+                break
+        arrivals.sort(key=lambda x: x["arrival_time"])
+        return {"arrivals": arrivals[:20], "stop_directions": {}, "rt_available": False}
 
     for entity in feed.entity:
         if not entity.HasField("trip_update"):
@@ -1002,7 +1038,7 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
             except Exception:
                 pass
 
-    return {"arrivals": arrivals[:20], "stop_directions": stop_directions}
+    return {"arrivals": arrivals[:20], "stop_directions": stop_directions, "rt_available": rt_available}
 
 
 @app.get("/api/stops/{stop_id}/arrivals")
@@ -1022,12 +1058,19 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
                 for a in arrivals:
                     a["is_demo"] = True
                 break
-        return arrivals[:15]
+        return {"arrivals": arrivals[:15], "rt_available": True}
 
+    rt_available = True
     try:
         feed = get_feed()
-    except requests.RequestException as e:
-        raise HTTPException(502, f"Translink API error: {e}")
+    except requests.RequestException:
+        rt_available = False
+        for day_offset in [0, 1]:
+            arrivals = get_static_arrivals([stop_id], now, day_offset)
+            if arrivals:
+                break
+        arrivals.sort(key=lambda x: x["arrival_time"])
+        return {"arrivals": arrivals[:15], "rt_available": False}
 
     for entity in feed.entity:
         if not entity.HasField("trip_update"):
@@ -1098,7 +1141,7 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
                 break
         arrivals.sort(key=lambda x: x["arrival_time"])
 
-    return arrivals[:15]
+    return {"arrivals": arrivals[:15], "rt_available": rt_available}
 
 
 @app.get("/api/stops/{stop_id}")
@@ -1236,16 +1279,24 @@ def get_vehicle_position(request: Request, trip_id: str):
 @app.get("/api/alerts")
 @limiter.limit("20/minute")
 def get_alerts(request: Request):
-    """GTFS-RT ServiceAlerts を返す（アクティブな警報のみ）"""
-    try:
-        feed = get_seq_feed()
-    except requests.RequestException as e:
-        raise HTTPException(502, f"Translink API error: {e}")
+    """GTFS-RT ServiceAlerts を返す（アクティブな警報のみ）。SEQ combined + SEQ/Alerts をマージ"""
+    entities: dict = {}  # entity.id → entity（重複排除）
+    for fetch_fn in (get_seq_feed, get_alerts_feed):
+        try:
+            feed = fetch_fn()
+            for ent in feed.entity:
+                if ent.HasField("alert") and ent.id not in entities:
+                    entities[ent.id] = ent
+        except requests.RequestException:
+            pass  # 片方が失敗しても続行
+
+    if not entities:
+        raise HTTPException(502, "Translink API error: both alert feeds failed")
 
     now = time.time()
     alerts = []
 
-    for entity in feed.entity:
+    for entity in entities.values():
         if not entity.HasField("alert"):
             continue
         alert = entity.alert

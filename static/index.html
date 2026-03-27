@@ -31,7 +31,7 @@
           <button id="lang-toggle" onclick="toggleLang()" title="Switch language">🌐 <span id="lang-label">日本語</span></button>
         </div>
       </div>
-      <h1 onclick="clearDisplay()" style="cursor:pointer;">SEQ Bus<br><span>Tracker</span></h1>
+      <h1 onclick="handleTitleClick()" style="cursor:pointer;">SEQ Bus<br><span>Tracker</span></h1>
       <p class="subtitle" data-i18n="subtitle">Real-time arrivals powered by Translink GTFS-RT</p>
     </header>
 
@@ -94,6 +94,7 @@
     <div id="main-panel">
       <div id="arrivals-col">
         <div class="section-label" data-i18n="sectionNextBuses">Next buses</div>
+        <div id="rt-unavailable-banner"></div>
         <div id="arrivals-filter-bar" style="display:none;"></div>
         <div id="arrivals-list"></div>
       </div>

@@ -1085,6 +1085,21 @@ h1 span {
   display: block;
 }
 
+#rt-unavailable-banner {
+  display: none;
+  background: rgba(255, 184, 0, 0.08);
+  border: 1px solid rgba(255, 184, 0, 0.3);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--warn);
+  margin-bottom: 10px;
+}
+
+#rt-unavailable-banner.visible {
+  display: block;
+}
+
 /* ── Refresh bar ── */
 .refresh-bar {
   height: 2px;
@@ -2032,17 +2047,44 @@ footer {
 }
 
 /* ── Alert filter bar ── */
+.alert-filter-wrap {
+  position: sticky;
+  top: 57px;
+  z-index: 1;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
 .alert-filter-bar {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
-  position: sticky;
-  top: 57px;
-  /* alert-panel-header の高さ分 */
-  z-index: 1;
+  padding: 12px 20px 10px;
+  max-height: 800px;
+  overflow: hidden;
+  transition: max-height 0.3s ease;
+}
+
+.alert-filter-bar.collapsed {
+  max-height: 84px; /* タグ約3行分 */
+}
+
+.alert-filter-toggle {
+  display: block;
+  width: 100%;
+  padding: 4px 20px 8px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.alert-filter-toggle:hover {
+  color: var(--text);
 }
 
 .alert-filter-tag {
@@ -2093,6 +2135,37 @@ footer {
 .alert-routes .alert-route-tag.active {
   background: var(--warn);
   color: #000;
+}
+
+.alert-routes-extra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  width: 100%;
+  margin-top: 2px;
+}
+
+.alert-routes-extra.hidden {
+  display: none;
+}
+
+.alert-routes-toggle {
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.alert-routes-toggle:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: var(--text);
 }
 
 /* ── Vehicle tracking ── */
