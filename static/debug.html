@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>SEQ Bus Tracker — Debug</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; font-size: 13px; background: #0f0f0f; color: #d4d4d4; padding: 12px; }
+    h1 { font-size: 16px; color: #fff; margin-bottom: 4px; }
+    h2 { font-size: 13px; color: #9cdcfe; margin: 12px 0 6px; text-transform: uppercase; letter-spacing: 1px; }
+    h3 { font-size: 12px; color: #ce9178; margin: 8px 0 4px; }
+    a { color: #4fc1ff; }
+
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; padding: 8px; background: #1e1e1e; border: 1px solid #333; }
+    input[type=text] { background: #2d2d2d; border: 1px solid #444; color: #d4d4d4; padding: 4px 8px; font-family: monospace; font-size: 13px; width: 260px; }
+    input[type=text]:focus { outline: 1px solid #569cd6; }
+    button { background: #2d2d2d; border: 1px solid #444; color: #d4d4d4; padding: 4px 10px; cursor: pointer; font-family: monospace; font-size: 12px; }
+    button:hover { background: #3d3d3d; }
+    button.active { background: #0e639c; border-color: #0e639c; color: #fff; }
+    button.danger { border-color: #f44747; color: #f44747; }
+    label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+    .layout { display: grid; grid-template-columns: 340px 1fr; gap: 12px; }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+
+    .panel { background: #1e1e1e; border: 1px solid #333; padding: 8px; }
+    .panel-title { font-size: 11px; color: #6a9955; border-bottom: 1px solid #333; padding-bottom: 4px; margin-bottom: 8px; }
+
+    /* Stop list */
+    .stop-item { padding: 5px 6px; cursor: pointer; border-bottom: 1px solid #2a2a2a; }
+    .stop-item:hover { background: #2a2a2a; }
+    .stop-item.selected { background: #0e3d5c; }
+    .stop-id { color: #888; font-size: 11px; }
+
+    /* Arrivals table */
+    .arrivals-wrap { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; font-size: 11px; }
+    th { background: #252525; color: #9cdcfe; text-align: left; padding: 4px 6px; white-space: nowrap; border-bottom: 1px solid #333; position: sticky; top: 0; }
+    td { padding: 3px 6px; border-bottom: 1px solid #222; white-space: nowrap; vertical-align: top; }
+    tr.rt { color: #4ec9b0; }
+    tr.static { color: #888; }
+    tr.selected-row td { background: #0e3d5c; }
+    tr:hover td { background: #252525; }
+    .delay-pos { color: #f44747; }
+    .delay-neg { color: #4ec9b0; }
+    .badge { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; }
+
+    /* Trip detail */
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    @media (max-width: 700px) { .detail-grid { grid-template-columns: 1fr; } }
+
+    .kv-table td:first-child { color: #888; padding-right: 12px; white-space: nowrap; }
+    .kv-table td:last-child { color: #dcdcaa; word-break: break-all; }
+
+    /* Stops timeline */
+    .stop-row { padding: 3px 0; display: flex; gap: 8px; align-items: flex-start; }
+    .stop-row.passed { opacity: 0.45; }
+    .stop-row.current { color: #4ec9b0; }
+    .stop-seq { color: #555; width: 28px; text-align: right; flex-shrink: 0; }
+    .stop-name { flex: 1; }
+    .stop-time { color: #888; width: 70px; text-align: right; flex-shrink: 0; }
+    .stop-time.rt { color: #4ec9b0; }
+
+    /* Alerts */
+    .alert-item { border: 1px solid #333; margin-bottom: 8px; padding: 8px; }
+    .alert-header { color: #f44747; margin-bottom: 4px; font-weight: bold; }
+    .alert-meta { color: #888; font-size: 11px; margin-bottom: 4px; }
+    .alert-desc { color: #bbb; font-size: 12px; }
+    .alert-routes { margin-top: 4px; }
+    .route-tag { display: inline-block; background: #333; padding: 1px 6px; margin: 2px; border-radius: 3px; font-size: 11px; }
+
+    /* Vehicle */
+    .vehicle-box { background: #252525; border: 1px solid #333; padding: 8px; }
+    .vehicle-row { display: flex; justify-content: space-between; padding: 2px 0; }
+    .vehicle-key { color: #888; }
+    .vehicle-val { color: #dcdcaa; }
+
+    /* Raw JSON */
+    details { margin-top: 8px; }
+    summary { cursor: pointer; color: #888; font-size: 11px; padding: 2px 0; }
+    summary:hover { color: #d4d4d4; }
+    pre { background: #141414; border: 1px solid #2a2a2a; padding: 8px; overflow-x: auto; font-size: 11px; color: #9a9a9a; max-height: 300px; margin-top: 4px; }
+
+    /* Status bar */
+    #status { font-size: 11px; color: #888; padding: 2px 6px; background: #1a1a1a; border: 1px solid #333; margin-bottom: 8px; display: flex; gap: 16px; flex-wrap: wrap; }
+    .status-ok { color: #4ec9b0; }
+    .status-err { color: #f44747; }
+    .status-warn { color: #ce9178; }
+
+    /* Refresh bar */
+    #refresh-bar { height: 2px; background: #333; margin-bottom: 8px; }
+    #refresh-fill { height: 100%; background: #0e639c; transition: width 0.5s linear; width: 100%; }
+
+    .empty { color: #555; padding: 12px 0; }
+    .tag-rt { background: #1a3d3a; color: #4ec9b0; }
+    .tag-static { background: #252525; color: #888; }
+  </style>
+</head>
+<body>
+
+<h1>SEQ Bus Tracker — Debug Console</h1>
+<div id="status">
+  <span id="s-time">—</span>
+  <span id="s-rt">RT: —</span>
+  <span id="s-alerts">Alerts: —</span>
+  <span id="s-vehicle">Vehicle: —</span>
+  <span id="s-stop">Stop: —</span>
+</div>
+<div id="refresh-bar"><div id="refresh-fill"></div></div>
+
+<div class="toolbar">
+  <input type="text" id="search-input" placeholder="Search stop name…" autocomplete="off">
+  <button onclick="findNearby()">◎ Nearby</button>
+  <button onclick="clearStop()" class="danger">✕ Clear</button>
+  <span style="color:#555">|</span>
+  <label><input type="checkbox" id="auto-refresh" checked onchange="toggleAutoRefresh()"> Auto-refresh (15s)</label>
+  <button onclick="manualRefresh()">↺ Refresh now</button>
+  <span style="color:#555">|</span>
+  <a href="/" style="font-size:12px;">← Back to main</a>
+</div>
+
+<div class="layout">
+
+  <!-- LEFT: Stop search + Arrivals -->
+  <div>
+    <div class="panel" style="margin-bottom:12px;">
+      <div class="panel-title">// STOP SEARCH</div>
+      <div id="stop-list"><div class="empty">Type to search stops, or use Nearby.</div></div>
+    </div>
+
+    <div class="panel" id="arrivals-panel" style="display:none;">
+      <div class="panel-title">// ARRIVALS — <span id="arrivals-stop-name"></span> <span id="arrivals-rt-badge"></span></div>
+      <div id="arrivals-wrap"></div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Trip detail + Alerts -->
+  <div>
+    <div class="panel" id="trip-panel" style="display:none; margin-bottom:12px;">
+      <div class="panel-title">// SELECTED TRIP</div>
+      <div id="trip-detail"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">// SERVICE ALERTS <span id="alert-count"></span></div>
+      <div id="alerts-wrap"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ─── State ─────────────────────────────────────────────────────────────────
+let currentStopId = null;
+let currentIsTerminal = false;
+let lastArrivals = [];
+let selectedTripId = null;
+let autoRefreshTimer = null;
+let refreshInterval = 15000;
+let refreshFillTimer = null;
+let lastRefreshTime = null;
+
+// ─── Utilities ─────────────────────────────────────────────────────────────
+function fmt(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+function fmtDelay(sec) {
+  if (sec === 0 || sec === null || sec === undefined) return '<span style="color:#555">±0s</span>';
+  const cls = sec > 0 ? 'delay-pos' : 'delay-neg';
+  const sign = sec > 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${sec}s</span>`;
+}
+function colorSwatch(hex) {
+  if (!hex) return '—';
+  return `<span style="display:inline-block;width:12px;height:12px;background:${hex};border:1px solid #555;vertical-align:middle;margin-right:4px;"></span>${hex}`;
+}
+function setStatus(id, text, cls) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = cls || '';
+}
+
+// ─── Stop Search ───────────────────────────────────────────────────────────
+let searchTimer = null;
+document.getElementById('search-input').addEventListener('input', e => {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if (q.length < 2) { document.getElementById('stop-list').innerHTML = '<div class="empty">Type 2+ characters…</div>'; return; }
+  searchTimer = setTimeout(() => searchStops(q), 250);
+});
+
+async function searchStops(q) {
+  const r = await fetch(`/api/stops/search?q=${encodeURIComponent(q)}`);
+  const data = await r.json();
+  renderStopList(data);
+}
+
+async function findNearby() {
+  setStatus('s-stop', 'Getting GPS…', 'status-warn');
+  navigator.geolocation.getCurrentPosition(async pos => {
+    const { latitude: lat, longitude: lon } = pos.coords;
+    const r = await fetch(`/api/stops/nearby?lat=${lat}&lon=${lon}&radius=500&limit=20`);
+    const data = await r.json();
+    renderStopList(data);
+  }, () => setStatus('s-stop', 'GPS denied', 'status-err'));
+}
+
+function renderStopList(stops) {
+  const el = document.getElementById('stop-list');
+  if (!stops.length) { el.innerHTML = '<div class="empty">No stops found.</div>'; return; }
+  el.innerHTML = stops.map(s => `
+    <div class="stop-item${String(s.stop_id) === String(currentStopId) ? ' selected' : ''}"
+         onclick="selectStop('${s.stop_id}', ${s.is_terminal || false})">
+      <div>${s.stop_name}</div>
+      <div class="stop-id">ID: ${s.stop_id}${s.distance_m != null ? ` · ${Math.round(s.distance_m)}m` : ''}${s.parent_station ? ` · parent: ${s.parent_station}` : ''}</div>
+    </div>
+  `).join('');
+}
+
+function selectStop(stopId, isTerminal) {
+  currentStopId = String(stopId);
+  currentIsTerminal = !!isTerminal;
+  selectedTripId = null;
+  document.getElementById('trip-panel').style.display = 'none';
+  setStatus('s-stop', `Stop: ${stopId}${isTerminal ? ' (terminal)' : ''}`, 'status-ok');
+  fetchArrivals();
+  startAutoRefresh();
+}
+
+function clearStop() {
+  currentStopId = null;
+  currentIsTerminal = false;
+  selectedTripId = null;
+  document.getElementById('arrivals-panel').style.display = 'none';
+  document.getElementById('trip-panel').style.display = 'none';
+  document.getElementById('stop-list').innerHTML = '<div class="empty">Type to search stops, or use Nearby.</div>';
+  document.getElementById('search-input').value = '';
+  stopAutoRefresh();
+  setStatus('s-stop', 'Stop: —', '');
+  setStatus('s-rt', 'RT: —', '');
+}
+
+// ─── Arrivals ──────────────────────────────────────────────────────────────
+async function fetchArrivals() {
+  if (!currentStopId) return;
+  const endpoint = currentIsTerminal
+    ? `/api/terminal/${currentStopId}/arrivals`
+    : `/api/stops/${currentStopId}/arrivals`;
+  try {
+    const r = await fetch(endpoint);
+    const data = await r.json();
+    const arrivals = data.arrivals || [];
+    const rtAvail = data.rt_available !== false;
+    lastArrivals = arrivals;
+    lastRefreshTime = Date.now();
+    renderArrivals(arrivals, rtAvail, data);
+    setStatus('s-rt', `RT: ${rtAvail ? 'available' : 'unavailable'} · ${arrivals.length} trips`, rtAvail ? 'status-ok' : 'status-warn');
+    setStatus('s-time', new Date().toLocaleTimeString('en-AU'));
+    startRefreshFill();
+  } catch (e) {
+    setStatus('s-rt', `RT: error — ${e.message}`, 'status-err');
+  }
+}
+
+function renderArrivals(arrivals, rtAvail, rawData) {
+  const panel = document.getElementById('arrivals-panel');
+  panel.style.display = '';
+
+  const stopName = arrivals[0]?.stop_id || currentStopId;
+  document.getElementById('arrivals-stop-name').textContent = currentStopId;
+  document.getElementById('arrivals-rt-badge').innerHTML = rtAvail
+    ? '<span class="badge tag-rt">RT</span>'
+    : '<span class="badge tag-static">Static fallback</span>';
+
+  if (!arrivals.length) {
+    document.getElementById('arrivals-wrap').innerHTML = '<div class="empty">No arrivals.</div>';
+    return;
+  }
+
+  const cols = [
+    { key: 'route_short_name', label: 'Route' },
+    { key: 'headsign',         label: 'Headsign' },
+    { key: 'arrival_time',     label: 'Arrival time' },
+    { key: 'minutes_until',    label: 'Min' },
+    { key: 'delay_seconds',    label: 'Delay' },
+    { key: 'stop_id',          label: 'Stop ID' },
+    { key: 'platform_code',    label: 'Platform' },
+    { key: 'direction_id',     label: 'Dir' },
+    { key: 'day_offset',       label: 'Day+' },
+    { key: 'trip_id',          label: 'Trip ID' },
+    { key: 'shape_id',         label: 'Shape ID' },
+    { key: 'route_long_name',  label: 'Route long name' },
+    { key: 'route_color',      label: 'Route color' },
+    { key: 'route_text_color', label: 'Text color' },
+  ];
+
+  const rows = arrivals.map((a, i) => {
+    const isRt = !a.day_offset && a.delay_seconds !== undefined && rtAvail;
+    const cells = cols.map(c => {
+      let v = a[c.key];
+      if (c.key === 'arrival_time') return `<td title="${v}">${fmt(v)}</td>`;
+      if (c.key === 'delay_seconds') return `<td>${fmtDelay(v)}</td>`;
+      if (c.key === 'route_color') return `<td>${colorSwatch(v)}</td>`;
+      if (c.key === 'route_text_color') return `<td>${colorSwatch(v)}</td>`;
+      if (c.key === 'day_offset') return `<td>${v ? `<span class="status-warn">+${v}</span>` : ''}</td>`;
+      if (v === null || v === undefined || v === '') return '<td style="color:#555">—</td>';
+      return `<td>${v}</td>`;
+    }).join('');
+    const selClass = String(a.trip_id) === String(selectedTripId) ? ' selected-row' : '';
+    return `<tr class="${isRt ? 'rt' : 'static'}${selClass}" onclick="selectTrip('${a.trip_id}', ${i})" style="cursor:pointer;">${cells}</tr>`;
+  }).join('');
+
+  document.getElementById('arrivals-wrap').innerHTML = `
+    <div class="arrivals-wrap">
+      <table>
+        <thead><tr>${cols.map(c => `<th>${c.label}</th>`).join('')}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <details><summary>Raw JSON (arrivals)</summary><pre>${JSON.stringify(rawData, null, 2)}</pre></details>
+  `;
+}
+
+// ─── Trip detail ───────────────────────────────────────────────────────────
+async function selectTrip(tripId, idx) {
+  selectedTripId = tripId;
+  // Re-render to update selected row highlight
+  if (lastArrivals.length) renderArrivals(lastArrivals, true, {});
+
+  const panel = document.getElementById('trip-panel');
+  panel.style.display = '';
+  document.getElementById('trip-detail').innerHTML = '<div class="empty">Loading…</div>';
+
+  const arrival = lastArrivals[idx];
+
+  const [stopsRes, vehicleRes] = await Promise.allSettled([
+    fetch(`/api/trips/${encodeURIComponent(tripId)}/stops`).then(r => r.json()),
+    fetch(`/api/trips/${encodeURIComponent(tripId)}/vehicle`).then(r => r.json()),
+  ]);
+
+  const stopsData  = stopsRes.status === 'fulfilled'  ? stopsRes.value  : null;
+  const vehicleData = vehicleRes.status === 'fulfilled' ? vehicleRes.value : null;
+
+  setStatus('s-vehicle', vehicleData
+    ? `Vehicle: lat=${vehicleData.lat?.toFixed(5)}, lon=${vehicleData.lon?.toFixed(5)}`
+    : 'Vehicle: no data', vehicleData ? 'status-ok' : 'status-warn');
+
+  document.getElementById('trip-detail').innerHTML = renderTripDetail(arrival, stopsData, vehicleData);
+}
+
+function renderTripDetail(a, stopsData, v) {
+  const STATUS_NAMES = { 0: 'INCOMING_AT', 1: 'STOPPED_AT', 2: 'IN_TRANSIT_TO' };
+
+  // Arrival summary
+  const arrivalKV = a ? `
+    <table class="kv-table">
+      <tr><td>trip_id</td><td>${a.trip_id || '—'}</td></tr>
+      <tr><td>route_short_name</td><td>${a.route_short_name || '—'}</td></tr>
+      <tr><td>route_long_name</td><td>${a.route_long_name || '—'}</td></tr>
+      <tr><td>headsign</td><td>${a.headsign || '—'}</td></tr>
+      <tr><td>stop_id</td><td>${a.stop_id || '—'}</td></tr>
+      <tr><td>platform_code</td><td>${a.platform_code || '—'}</td></tr>
+      <tr><td>direction_id</td><td>${a.direction_id ?? '—'}</td></tr>
+      <tr><td>arrival_time</td><td>${fmt(a.arrival_time)} <span style="color:#555">(${a.arrival_time})</span></td></tr>
+      <tr><td>minutes_until</td><td>${a.minutes_until ?? '—'}</td></tr>
+      <tr><td>delay_seconds</td><td>${fmtDelay(a.delay_seconds)}</td></tr>
+      <tr><td>shape_id</td><td>${a.shape_id || '—'}</td></tr>
+      <tr><td>route_color</td><td>${colorSwatch(a.route_color)}</td></tr>
+      <tr><td>route_text_color</td><td>${colorSwatch(a.route_text_color)}</td></tr>
+      <tr><td>day_offset</td><td>${a.day_offset ?? 0}</td></tr>
+    </table>
+  ` : '<div class="empty">No arrival data.</div>';
+
+  // Vehicle position
+  const vehicleHTML = v ? `
+    <div class="vehicle-box">
+      <div class="vehicle-row"><span class="vehicle-key">latitude</span><span class="vehicle-val">${v.lat?.toFixed(6)}</span></div>
+      <div class="vehicle-row"><span class="vehicle-key">longitude</span><span class="vehicle-val">${v.lon?.toFixed(6)}</span></div>
+      <div class="vehicle-row"><span class="vehicle-key">bearing</span><span class="vehicle-val">${v.bearing?.toFixed(1)}°</span></div>
+      <div class="vehicle-row"><span class="vehicle-key">speed</span><span class="vehicle-val">${v.speed != null ? (v.speed * 3.6).toFixed(1) + ' km/h' : '—'}</span></div>
+      <div class="vehicle-row"><span class="vehicle-key">current_status</span><span class="vehicle-val">${STATUS_NAMES[v.current_status] ?? v.current_status}</span></div>
+      <div class="vehicle-row"><span class="vehicle-key">current_stop_id</span><span class="vehicle-val">${v.current_stop_id || '—'}</span></div>
+      <div class="vehicle-row"><span class="vehicle-key">timestamp</span><span class="vehicle-val">${fmt(v.timestamp)} <span style="color:#555">(${v.timestamp})</span></span></div>
+      <details><summary>Raw JSON (vehicle)</summary><pre>${JSON.stringify(v, null, 2)}</pre></details>
+    </div>
+  ` : '<div class="empty">No vehicle position data.</div>';
+
+  // Stops timeline
+  // API fields: stop_id, stop_name, stop_lat, stop_lon, static_time (HH:MM:SS string), predicted_unix (unix ts|null), passed
+  let stopsHTML = '<div class="empty">No stops data.</div>';
+  if (stopsData?.stops?.length) {
+    const stopRows = stopsData.stops.map((s, i) => {
+      const cls = s.passed ? 'passed' : '';
+      const timeStr = s.predicted_unix
+        ? `<span class="stop-time rt">${fmt(s.predicted_unix)} <span style="color:#4ec9b0;font-size:10px;">RT</span></span>`
+        : `<span class="stop-time">${s.static_time || '—'}</span>`;
+      return `<div class="stop-row ${cls}">
+        <span class="stop-seq">${i + 1}</span>
+        <span class="stop-name">${s.stop_name || s.stop_id}<span style="color:#555;font-size:11px;"> ${s.stop_id}</span></span>
+        ${timeStr}
+      </div>`;
+    }).join('');
+    stopsHTML = `
+      <div style="max-height:400px;overflow-y:auto;font-size:11px;">
+        <div style="display:flex;gap:8px;padding:2px 0;border-bottom:1px solid #333;margin-bottom:4px;color:#555;">
+          <span style="width:28px;text-align:right;">#</span>
+          <span style="flex:1;">stop (id)</span>
+          <span style="width:100px;text-align:right;">time</span>
+        </div>
+        ${stopRows}
+      </div>
+      <details><summary>Raw JSON (stops)</summary><pre>${JSON.stringify(stopsData, null, 2)}</pre></details>
+    `;
+  }
+
+  return `
+    <div class="detail-grid">
+      <div>
+        <h3>Arrival data (TripUpdates)</h3>
+        ${arrivalKV}
+      </div>
+      <div>
+        <h3>Vehicle position (VehiclePositions)</h3>
+        ${vehicleHTML}
+      </div>
+    </div>
+    <h3 style="margin-top:12px;">Trip stops (${stopsData?.stops?.length ?? 0} stops)</h3>
+    ${stopsHTML}
+  `;
+}
+
+// ─── Alerts ────────────────────────────────────────────────────────────────
+async function fetchAlerts() {
+  try {
+    const r = await fetch('/api/alerts');
+    const alerts = await r.json();
+    renderAlerts(alerts);
+    setStatus('s-alerts', `Alerts: ${alerts.length} active`, alerts.length > 0 ? 'status-warn' : 'status-ok');
+  } catch (e) {
+    document.getElementById('alerts-wrap').innerHTML = `<div class="empty status-err">Error: ${e.message}</div>`;
+    setStatus('s-alerts', 'Alerts: error', 'status-err');
+  }
+}
+
+function renderAlerts(alerts) {
+  document.getElementById('alert-count').textContent = `(${alerts.length})`;
+  if (!alerts.length) {
+    document.getElementById('alerts-wrap').innerHTML = '<div class="empty">No active alerts.</div>';
+    return;
+  }
+  document.getElementById('alerts-wrap').innerHTML = alerts.map(a => `
+    <div class="alert-item">
+      <div class="alert-header">${a.header || '(no header)'}</div>
+      <div class="alert-meta">
+        ID: ${a.id}
+        ${a.cause ? ` · Cause: <span style="color:#ce9178">${a.cause}</span>` : ''}
+        ${a.effect ? ` · Effect: <span style="color:#f44747">${a.effect}</span>` : ''}
+      </div>
+      ${a.description ? `<div class="alert-desc">${a.description}</div>` : ''}
+      ${a.route_short_names?.length ? `<div class="alert-routes">${a.route_short_names.map(r => `<span class="route-tag">${r}</span>`).join('')}</div>` : ''}
+      ${a.stop_ids?.length ? `<div class="alert-meta" style="margin-top:4px;">Stops: ${a.stop_ids.join(', ')}</div>` : ''}
+      <details><summary>Raw JSON</summary><pre>${JSON.stringify(a, null, 2)}</pre></details>
+    </div>
+  `).join('');
+}
+
+// ─── Auto refresh ──────────────────────────────────────────────────────────
+function startAutoRefresh() {
+  stopAutoRefresh();
+  if (!document.getElementById('auto-refresh').checked) return;
+  autoRefreshTimer = setInterval(() => {
+    fetchArrivals();
+    fetchAlerts();
+  }, refreshInterval);
+}
+
+function stopAutoRefresh() {
+  clearInterval(autoRefreshTimer);
+  autoRefreshTimer = null;
+}
+
+function toggleAutoRefresh() {
+  if (document.getElementById('auto-refresh').checked) startAutoRefresh();
+  else stopAutoRefresh();
+}
+
+function manualRefresh() {
+  fetchArrivals();
+  fetchAlerts();
+}
+
+function startRefreshFill() {
+  clearInterval(refreshFillTimer);
+  const fill = document.getElementById('refresh-fill');
+  fill.style.transition = 'none';
+  fill.style.width = '100%';
+  setTimeout(() => {
+    fill.style.transition = `width ${refreshInterval / 1000}s linear`;
+    fill.style.width = '0%';
+  }, 50);
+}
+
+// ─── Init ──────────────────────────────────────────────────────────────────
+fetchAlerts();
+setInterval(() => {
+  setStatus('s-time', new Date().toLocaleTimeString('en-AU'));
+}, 1000);
+// Periodically refresh alerts even without a stop selected
+setInterval(fetchAlerts, 60000);
+</script>
+</body>
+</html>

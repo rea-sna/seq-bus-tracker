@@ -105,12 +105,19 @@ uvicorn main:app --reload --port 8000 --host 0.0.0.0
 | GET | `/api/stops/nearby?lat=&lon=&radius=&limit=` | GPS座標から近いバス停を取得 | 20回/分 |
 | GET | `/api/stops/{stop_id}/arrivals` | バス停のリアルタイム到着情報（次の15本） | 30回/分 |
 | GET | `/api/stops/{stop_id}` | バス停の詳細情報 | 60回/分 |
+| GET | `/api/stops/multi/arrivals?ids=` | 複数バス停の到着情報 | 30回/分 |
 | GET | `/api/terminal/{parent_id}/arrivals` | ターミナルの全ホーム到着情報 | 30回/分 |
-| GET | `/api/shapes/{shape_id:path}` | ルート形状座標 | 30回/分 |
 | GET | `/api/trips/{trip_id:path}/stops` | trip経由バス停一覧（予測時刻・通過済みフラグ付き） | 30回/分 |
+| GET | `/api/trips/{trip_id:path}/vehicle` | 車両の現在位置 | 60回/分 |
+| GET | `/api/routes/search?q=` | 路線番号・路線名で検索 | 60回/分 |
+| GET | `/api/routes/{route_id}/stops` | 路線の代表便バス停一覧 | 30回/分 |
+| GET | `/api/shapes/{shape_id:path}` | ルート形状座標 | 30回/分 |
 | GET | `/api/alerts` | アクティブなサービスアラート一覧 | 20回/分 |
+| GET | `/api/config` | アプリ設定 | - |
 
 レート制限はIPアドレスベース（[slowapi](https://github.com/laurentS/slowapi) 使用）。全体デフォルト: 200回/分。
+
+各エンドポイントのパラメータ・レスポンス形式の詳細は **[api.md](api.md)** を参照。
 
 ---
 

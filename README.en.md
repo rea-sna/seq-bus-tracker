@@ -105,12 +105,19 @@ Open `http://localhost:8000` in your browser.
 | GET | `/api/stops/nearby?lat=&lon=&radius=&limit=` | Stops near GPS coordinates | 20/min |
 | GET | `/api/stops/{stop_id}/arrivals` | Real-time arrivals for a stop (next 15) | 30/min |
 | GET | `/api/stops/{stop_id}` | Stop details | 60/min |
+| GET | `/api/stops/multi/arrivals?ids=` | Arrivals for multiple stops | 30/min |
 | GET | `/api/terminal/{parent_id}/arrivals` | Arrivals across all platforms of a terminal | 30/min |
-| GET | `/api/shapes/{shape_id:path}` | Route shape coordinates | 30/min |
 | GET | `/api/trips/{trip_id:path}/stops` | All stops for a trip with real-time predictions | 30/min |
+| GET | `/api/trips/{trip_id:path}/vehicle` | Current vehicle position for a trip | 60/min |
+| GET | `/api/routes/search?q=` | Search routes by number or name | 60/min |
+| GET | `/api/routes/{route_id}/stops` | Stops for a route's representative trip | 30/min |
+| GET | `/api/shapes/{shape_id:path}` | Route shape coordinates | 30/min |
 | GET | `/api/alerts` | Active service alerts | 20/min |
+| GET | `/api/config` | App configuration | - |
 
 Rate limiting is IP-based via [slowapi](https://github.com/laurentS/slowapi). Global default: 200 requests/minute.
+
+For detailed parameters and response schemas, see **[api.md](api.md)**.
 
 ---
 
