@@ -517,11 +517,33 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
   }
 }
 
+function renderRouteAlertPanel(routeShortName) {
+  const panel = document.getElementById('route-alert-panel');
+  const matched = alertsCache.filter(a => a.route_short_names.includes(routeShortName));
+  if (!matched.length) {
+    panel.style.display = 'none';
+    panel.innerHTML = '';
+    return;
+  }
+  panel.innerHTML = matched.map(a => `
+    <div class="route-alert-item">
+      <div class="route-alert-icon">⚠️</div>
+      <div class="route-alert-body">
+        ${a.header ? `<div class="route-alert-header">${escHtml(a.header)}</div>` : ''}
+        ${a.description ? `<div class="route-alert-desc">${escHtml(a.description)}</div>` : ''}
+      </div>
+    </div>`).join('');
+  panel.style.display = 'block';
+}
+
 function clearRoute() {
   neonAnimationId = null;
   if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
   if (stopDotLayer) { map.removeLayer(stopDotLayer); stopDotLayer = null; }
   document.getElementById('map-hint').innerHTML = t('mapHint');
+  const rap = document.getElementById('route-alert-panel');
+  rap.style.display = 'none';
+  rap.innerHTML = '';
   const tl = document.getElementById('stop-timeline');
   tl.style.display = 'none';
   tl.innerHTML = '';
@@ -1212,6 +1234,8 @@ function renderArrivals(arrivals, showAll = false) {
   const limit = isMobile && !showAll ? 5 : arrivals.length;
   const visible = arrivals.slice(0, limit);
 
+  const alertRoutes = new Set(alertsCache.flatMap(a => a.route_short_names));
+
   list.innerHTML = visible.map((a, i) => {
     const min = a.minutes_until;
     const isTomorrow = a.day_offset === 1;
@@ -1235,6 +1259,9 @@ function renderArrivals(arrivals, showAll = false) {
     const tomorrowBadge = isTomorrow
       ? `<span class="delay-badge tomorrow">${t('tomorrow')}</span>`
       : '';
+    const alertBadge = alertRoutes.has(a.route_short_name)
+      ? `<span class="delay-badge alert-warn">⚠️</span>`
+      : '';
 
     const arrivalTimeHtml = isTomorrow
       ? `<div class="minutes later">${clockTime}</div>
@@ -1251,7 +1278,7 @@ function renderArrivals(arrivals, showAll = false) {
         </div>
         <div class="route-info">
           <div class="marquee-wrap route-headsign">
-            <span class="marquee-inner">${escHtml(headsign)}${delayBadge}${tomorrowBadge}</span>
+            <span class="marquee-inner">${escHtml(headsign)}${delayBadge}${tomorrowBadge}${alertBadge}</span>
           </div>
           ${sub ? `<div class="marquee-wrap route-long"><span class="marquee-inner">${escHtml(sub)}</span></div>` : ''}
         </div>
@@ -1310,6 +1337,7 @@ function onCardClick(index) {
   renderArrivals(filtered);
   const a = filtered[index];
   activeArrivalTripId = a.trip_id;
+  renderRouteAlertPanel(a.route_short_name);
   showRoute(a.shape_id, a.trip_id, a.route_short_name, a.headsign || a.route_long_name, a.route_color, a.stop_id);
 }
 
