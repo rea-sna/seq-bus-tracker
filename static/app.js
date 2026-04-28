@@ -391,6 +391,15 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
   const lineColor = resolveRouteColor(routeShort, routeColor) || '#0099ff';
   hint.innerHTML = `<span style="color:var(--muted)">${t('mapLoading')}</span>`;
 
+  // タイムライン・車両パネルを即クリアしてローディング表示
+  const tl = document.getElementById('stop-timeline');
+  if (tl) {
+    tl.style.display = 'block';
+    tl.innerHTML = `<div style="padding:12px 14px;font-size:12px;color:var(--muted);font-family:'Space Mono',monospace">${t('mapLoading')}</div>`;
+  }
+  const vp = document.getElementById('vehicle-panel');
+  if (vp) vp.style.display = 'none';
+
   // shape と trip stops を並列取得（重複リクエストを排除）
   const [shapeRes, stRes] = await Promise.all([
     shapeId ? fetch(`${API}/api/shapes/${shapeId}`).catch(() => null) : Promise.resolve(null),
