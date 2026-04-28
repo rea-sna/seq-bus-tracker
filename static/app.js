@@ -1,9 +1,11 @@
 const API = '';
-const METRO_COLOR = '#5EC4BC'; // M1 / M2 固定カラー
+const M1_COLOR = '#80c242'; // M1 固定カラー
+const M2_COLOR = '#5EC4BC'; // M2 固定カラー
 
 // M1/M2 はエンドポイントのカラーを無視して固定色を使う
 function resolveRouteColor(routeShort, routeColor) {
-  if (routeShort === 'M1' || routeShort === 'M2') return METRO_COLOR;
+  if (routeShort === 'M1') return M1_COLOR;
+  if (routeShort === 'M2') return M2_COLOR;
   return routeColor || '';
 }
 
@@ -80,6 +82,7 @@ const STRINGS = {
     minLabel: 'min',
     platLabel: 'Plat',
     vehicleLive: 'Live position',
+    vehicleApproaching: 'Approaching (pre-turnaround)',
     vehicleSecsAgo: s => `${s}s ago`,
     vehicleMinAgo: m => `${m}min ago`,
     vehicleNoPos: 'No live position available',
@@ -144,6 +147,7 @@ const STRINGS = {
     minLabel: '分',
     platLabel: 'のりば',
     vehicleLive: 'リアルタイム位置',
+    vehicleApproaching: '折り返し前の位置',
     vehicleSecsAgo: s => `${s}秒前`,
     vehicleMinAgo: m => `${m}分前`,
     vehicleNoPos: '位置情報なし',
@@ -375,7 +379,7 @@ function placeStopMarker(lat, lon, name) {
   map.setView([lat, lon], 12);
 }
 
-async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, platformStopId = null) {
+async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, platformStopId = null, vehicleId = null) {
   neonAnimationId = null; // 実行中のアニメーションを停止
   if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
   if (stopDotLayer) { map.removeLayer(stopDotLayer); stopDotLayer = null; }
@@ -403,7 +407,7 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
 
   currentTripStops = stData;
   currentVehicleTargetStopId = platformStopId || currentStopId;
-  startVehicleTracking(tripId, lineColor);
+  startVehicleTracking(tripId, lineColor, vehicleId);
 
   // タイムラインは shape の有無に関わらず常に表示（データを渡して再利用）
   renderTimeline(stData, lineColor, platformStopId);
@@ -599,13 +603,16 @@ function clearDisplay() {
 }
 
 // ── Vehicle tracking ─────────────────────────────────────────────────────────
-function makeVehicleIcon(bearing, color) {
+function makeVehicleIcon(bearing, color, dashed = false) {
   const c = color || '#0099ff';
+  const strokeAttr = dashed
+    ? `stroke="#fff" stroke-width="2" stroke-dasharray="4 3"`
+    : `stroke="#fff" stroke-width="2"`;
   return L.divIcon({
     className: '',
     html: `<div class="vehicle-marker">
       <svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="14" cy="14" r="12" fill="${c}" stroke="#fff" stroke-width="2"/>
+        <circle cx="14" cy="14" r="12" fill="${c}" ${strokeAttr}/>
       </svg>
       <span class="vehicle-marker-emoji">🚌</span>
     </div>`,
@@ -679,23 +686,39 @@ function updateVehiclePanel(pos, lineColor) {
     ${currentStopHtml}`;
 }
 
-async function updateVehicleMarker(tripId, lineColor) {
+async function updateVehicleMarker(tripId, lineColor, vehicleId = null) {
   try {
     const res = await fetch(`${API}/api/trips/${tripId}/vehicle`);
-    const pos = res.ok ? await res.json() : null;
+    let pos = res.ok ? await res.json() : null;
+    let isPreTurnaround = false;
+
+    // trip_idで見つからず vehicle_id がある場合、折り返し前の位置を検索
+    if (!pos && vehicleId) {
+      const res2 = await fetch(`${API}/api/vehicles/${encodeURIComponent(vehicleId)}/position`);
+      if (res2.ok) {
+        const p2 = await res2.json();
+        // 別のtripを走行中の場合のみ表示（同じtripなら通常追跡と同じ）
+        if (p2 && p2.current_trip_id !== tripId) {
+          pos = p2;
+          isPreTurnaround = true;
+        }
+      }
+    }
+
     if (!pos) {
       if (vehicleMarker) { map.removeLayer(vehicleMarker); vehicleMarker = null; }
       updateVehiclePanel(null);
       return;
     }
-    const icon = makeVehicleIcon(pos.bearing, lineColor);
+    const icon = makeVehicleIcon(pos.bearing, lineColor, isPreTurnaround);
     if (vehicleMarker) {
       vehicleMarker.setLatLng([pos.lat, pos.lon]);
       vehicleMarker.setIcon(icon);
     } else {
+      const tooltip = isPreTurnaround ? t('vehicleApproaching') : t('vehicleLive');
       vehicleMarker = L.marker([pos.lat, pos.lon], { icon, zIndexOffset: 900 })
         .addTo(map)
-        .bindTooltip(t('vehicleLive'), { direction: 'top', offset: [0, -6], className: 'stop-tooltip' });
+        .bindTooltip(tooltip, { direction: 'top', offset: [0, -6], className: 'stop-tooltip' });
     }
     updateVehiclePanel(pos, lineColor);
 
@@ -715,10 +738,10 @@ async function updateVehicleMarker(tripId, lineColor) {
   }
 }
 
-function startVehicleTracking(tripId, lineColor) {
+function startVehicleTracking(tripId, lineColor, vehicleId = null) {
   stopVehicleTracking();
-  updateVehicleMarker(tripId, lineColor);
-  vehicleRefreshTimer = setInterval(() => updateVehicleMarker(tripId, lineColor), 15000);
+  updateVehicleMarker(tripId, lineColor, vehicleId);
+  vehicleRefreshTimer = setInterval(() => updateVehicleMarker(tripId, lineColor, vehicleId), 15000);
 }
 
 function stopVehicleTracking() {
@@ -1195,7 +1218,7 @@ async function fetchArrivals(stopId) {
         activeCardIndex = newIdx;
         renderArrivals(filtered, showAllArrivals);
         const a = filtered[newIdx];
-        showRoute(a.shape_id, a.trip_id, a.route_short_name, a.headsign || a.route_long_name, a.route_color, a.stop_id);
+        showRoute(a.shape_id, a.trip_id, a.route_short_name, a.headsign || a.route_long_name, a.route_color, a.stop_id, a.vehicle_id || null);
       } else if (filtered.length > 0) {
         onCardClick(0);
       }
@@ -1338,7 +1361,7 @@ function onCardClick(index) {
   const a = filtered[index];
   activeArrivalTripId = a.trip_id;
   renderRouteAlertPanel(a.route_short_name);
-  showRoute(a.shape_id, a.trip_id, a.route_short_name, a.headsign || a.route_long_name, a.route_color, a.stop_id);
+  showRoute(a.shape_id, a.trip_id, a.route_short_name, a.headsign || a.route_long_name, a.route_color, a.stop_id, a.vehicle_id || null);
 }
 
 // ── Auto-refresh ─────────────────────────────────────────────────────────────

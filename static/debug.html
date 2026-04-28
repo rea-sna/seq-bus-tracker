@@ -292,6 +292,7 @@ function renderArrivals(arrivals, rtAvail, rawData) {
     { key: 'direction_id',     label: 'Dir' },
     { key: 'day_offset',       label: 'Day+' },
     { key: 'trip_id',          label: 'Trip ID' },
+    { key: 'vehicle_id',       label: 'Vehicle ID' },
     { key: 'shape_id',         label: 'Shape ID' },
     { key: 'route_long_name',  label: 'Route long name' },
     { key: 'route_color',      label: 'Route color' },
@@ -342,17 +343,29 @@ async function selectTrip(tripId, idx) {
     fetch(`/api/trips/${encodeURIComponent(tripId)}/vehicle`).then(r => r.json()),
   ]);
 
-  const stopsData  = stopsRes.status === 'fulfilled'  ? stopsRes.value  : null;
-  const vehicleData = vehicleRes.status === 'fulfilled' ? vehicleRes.value : null;
+  const stopsData   = stopsRes.status === 'fulfilled'  ? stopsRes.value  : null;
+  let vehicleData   = vehicleRes.status === 'fulfilled' ? vehicleRes.value : null;
+  let preTurnaround = null;
 
-  setStatus('s-vehicle', vehicleData
-    ? `Vehicle: lat=${vehicleData.lat?.toFixed(5)}, lon=${vehicleData.lon?.toFixed(5)}`
-    : 'Vehicle: no data', vehicleData ? 'status-ok' : 'status-warn');
+  // trip_idで車両が見つからず vehicle_id がある場合、折り返し前の位置を検索
+  if (!vehicleData && arrival?.vehicle_id) {
+    try {
+      const r = await fetch(`/api/vehicles/${encodeURIComponent(arrival.vehicle_id)}/position`);
+      const p = r.ok ? await r.json() : null;
+      if (p && p.current_trip_id !== tripId) preTurnaround = p;
+    } catch {}
+  }
 
-  document.getElementById('trip-detail').innerHTML = renderTripDetail(arrival, stopsData, vehicleData);
+  setStatus('s-vehicle',
+    vehicleData    ? `Vehicle: lat=${vehicleData.lat?.toFixed(5)}, lon=${vehicleData.lon?.toFixed(5)}` :
+    preTurnaround  ? `Pre-turnaround: lat=${preTurnaround.lat?.toFixed(5)}, lon=${preTurnaround.lon?.toFixed(5)}` :
+                     'Vehicle: no data',
+    (vehicleData || preTurnaround) ? 'status-ok' : 'status-warn');
+
+  document.getElementById('trip-detail').innerHTML = renderTripDetail(arrival, stopsData, vehicleData, preTurnaround);
 }
 
-function renderTripDetail(a, stopsData, v) {
+function renderTripDetail(a, stopsData, v, preTurnaround = null) {
   const STATUS_NAMES = { 0: 'INCOMING_AT', 1: 'STOPPED_AT', 2: 'IN_TRANSIT_TO' };
 
   // Arrival summary
@@ -376,18 +389,27 @@ function renderTripDetail(a, stopsData, v) {
   ` : '<div class="empty">No arrival data.</div>';
 
   // Vehicle position
-  const vehicleHTML = v ? `
+  function vehicleBox(data, label) {
+    return `
     <div class="vehicle-box">
-      <div class="vehicle-row"><span class="vehicle-key">latitude</span><span class="vehicle-val">${v.lat?.toFixed(6)}</span></div>
-      <div class="vehicle-row"><span class="vehicle-key">longitude</span><span class="vehicle-val">${v.lon?.toFixed(6)}</span></div>
-      <div class="vehicle-row"><span class="vehicle-key">bearing</span><span class="vehicle-val">${v.bearing?.toFixed(1)}°</span></div>
-      <div class="vehicle-row"><span class="vehicle-key">speed</span><span class="vehicle-val">${v.speed != null ? (v.speed * 3.6).toFixed(1) + ' km/h' : '—'}</span></div>
-      <div class="vehicle-row"><span class="vehicle-key">current_status</span><span class="vehicle-val">${STATUS_NAMES[v.current_status] ?? v.current_status}</span></div>
-      <div class="vehicle-row"><span class="vehicle-key">current_stop_id</span><span class="vehicle-val">${v.current_stop_id || '—'}</span></div>
-      <div class="vehicle-row"><span class="vehicle-key">timestamp</span><span class="vehicle-val">${fmt(v.timestamp)} <span style="color:#555">(${v.timestamp})</span></span></div>
-      <details><summary>Raw JSON (vehicle)</summary><pre>${JSON.stringify(v, null, 2)}</pre></details>
-    </div>
-  ` : '<div class="empty">No vehicle position data.</div>';
+      ${label ? `<div style="color:#888;font-size:11px;margin-bottom:6px;">${label}</div>` : ''}
+      <div class="vehicle-row"><span class="vehicle-key">latitude</span><span class="vehicle-val">${data.lat?.toFixed(6)}</span></div>
+      <div class="vehicle-row"><span class="vehicle-key">longitude</span><span class="vehicle-val">${data.lon?.toFixed(6)}</span></div>
+      <div class="vehicle-row"><span class="vehicle-key">bearing</span><span class="vehicle-val">${data.bearing?.toFixed(1)}°</span></div>
+      <div class="vehicle-row"><span class="vehicle-key">speed</span><span class="vehicle-val">${data.speed != null ? (data.speed * 3.6).toFixed(1) + ' km/h' : '—'}</span></div>
+      <div class="vehicle-row"><span class="vehicle-key">current_status</span><span class="vehicle-val">${STATUS_NAMES[data.current_status] ?? data.current_status}</span></div>
+      <div class="vehicle-row"><span class="vehicle-key">current_stop_id</span><span class="vehicle-val">${data.current_stop_id || '—'}</span></div>
+      ${data.current_trip_id != null ? `<div class="vehicle-row"><span class="vehicle-key">current_trip_id</span><span class="vehicle-val">${data.current_trip_id}</span></div>` : ''}
+      <div class="vehicle-row"><span class="vehicle-key">timestamp</span><span class="vehicle-val">${fmt(data.timestamp)} <span style="color:#555">(${data.timestamp})</span></span></div>
+      <details><summary>Raw JSON (vehicle)</summary><pre>${JSON.stringify(data, null, 2)}</pre></details>
+    </div>`;
+  }
+
+  const vehicleHTML = v
+    ? vehicleBox(v, null)
+    : preTurnaround
+      ? vehicleBox(preTurnaround, '⚠ Pre-turnaround position (different trip)')
+      : '<div class="empty">No vehicle position data.</div>';
 
   // Stops timeline
   // API fields: stop_id, stop_name, stop_lat, stop_lon, static_time (HH:MM:SS string), predicted_unix (unix ts|null), passed
