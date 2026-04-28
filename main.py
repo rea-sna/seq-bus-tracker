@@ -607,9 +607,7 @@ def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0):
             continue
         trip_id = row["trip_id"]
         stop_id = str(row["stop_id"])
-        # 終着駅フィルタ
-        if last_stop_by_trip.get(trip_id) == stop_id:
-            continue
+        is_last_stop = last_stop_by_trip.get(trip_id) == stop_id
         rc  = str(row["route_color"]      or "")
         rtc = str(row["route_text_color"] or "")
         arrivals.append({
@@ -628,6 +626,7 @@ def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0):
             "direction_id":     str(row["direction_id"]     or ""),
             "is_static":        True,
             "day_offset":       day_offset,
+            "is_last_stop":     is_last_stop,
         })
         if len(arrivals) >= 15:
             break
@@ -948,8 +947,7 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
             trip_id = entity.trip_update.trip.trip_id
             if trip_id not in trips_dict:
                 continue
-            if last_stop_by_trip.get(trip_id) == str(stu.stop_id):
-                continue
+            is_last_stop = last_stop_by_trip.get(trip_id) == str(stu.stop_id)
             trip = trips_dict[trip_id]
 
             route_id = trip["route_id"]
@@ -978,6 +976,7 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
                 "route_color":      f"#{route_color}"      if route_color      else "",
                 "route_text_color": f"#{route_text_color}" if route_text_color else "",
                 "direction_id":     trip["direction_id"],
+                "is_last_stop":     is_last_stop,
             })
 
     arrivals.sort(key=lambda x: x["arrival_time"])
@@ -1072,8 +1071,7 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
             trip_id = entity.trip_update.trip.trip_id
             if trip_id not in trips_dict:
                 continue
-            if last_stop_by_trip.get(trip_id) == str(stu.stop_id):
-                continue
+            is_last_stop = last_stop_by_trip.get(trip_id) == str(stu.stop_id)
             trip = trips_dict[trip_id]
 
             route_id = trip["route_id"]
@@ -1102,6 +1100,7 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
                 "route_color":      f"#{route_color}"      if route_color      else "",
                 "route_text_color": f"#{route_text_color}" if route_text_color else "",
                 "direction_id":     trip["direction_id"],
+                "is_last_stop":     is_last_stop,
             })
 
     arrivals.sort(key=lambda x: x["arrival_time"])
@@ -1193,8 +1192,7 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
             trip_id = entity.trip_update.trip.trip_id
             if trip_id not in trips_dict:
                 continue
-            if last_stop_by_trip.get(trip_id) == str(stop_id):
-                continue
+            is_last_stop = last_stop_by_trip.get(trip_id) == str(stop_id)
             trip = trips_dict[trip_id]
 
             route_id = trip["route_id"]
@@ -1223,6 +1221,7 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
                 "route_color":      f"#{route_color}"      if route_color      else "",
                 "route_text_color": f"#{route_text_color}" if route_text_color else "",
                 "direction_id":     trip["direction_id"],
+                "is_last_stop":     is_last_stop,
             })
 
     arrivals.sort(key=lambda x: x["arrival_time"])

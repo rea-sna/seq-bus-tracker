@@ -99,6 +99,7 @@ const STRINGS = {
     routeDir0: 'Outbound',
     routeDir1: 'Inbound',
     rtUnavailable: 'Real-time data unavailable — showing scheduled times only.',
+    lastStop: 'Terminates here',
   },
   ja: {
     searchPlaceholder: 'バス停を検索…',
@@ -164,6 +165,7 @@ const STRINGS = {
     routeDir0: '下り',
     routeDir1: '上り',
     rtUnavailable: 'リアルタイム情報を取得できません。時刻表の予定時刻を表示しています。',
+    lastStop: '当駅止まり',
   }
 };
 
@@ -1294,6 +1296,9 @@ function renderArrivals(arrivals, showAll = false) {
     const alertBadge = alertRoutes.has(a.route_short_name)
       ? `<span class="delay-badge alert-warn">⚠️</span>`
       : '';
+    const lastStopBadge = a.is_last_stop
+      ? `<span class="delay-badge last-stop">${t('lastStop')}</span>`
+      : '';
 
     const arrivalTimeHtml = isTomorrow
       ? `<div class="minutes later">${clockTime}</div>
@@ -1310,7 +1315,7 @@ function renderArrivals(arrivals, showAll = false) {
         </div>
         <div class="route-info">
           <div class="marquee-wrap route-headsign">
-            <span class="marquee-inner">${escHtml(headsign)}${delayBadge}${tomorrowBadge}${alertBadge}</span>
+            <span class="marquee-inner">${escHtml(headsign)}${delayBadge}${tomorrowBadge}${lastStopBadge}${alertBadge}</span>
           </div>
           ${sub ? `<div class="marquee-wrap route-long"><span class="marquee-inner">${escHtml(sub)}</span></div>` : ''}
         </div>

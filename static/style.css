@@ -1015,6 +1015,11 @@ h1 span {
   font-size: 11px;
 }
 
+.delay-badge.last-stop {
+  background: rgba(160, 160, 180, 0.18);
+  color: #a0a0b0;
+}
+
 /* ── Map ── */
 #map-col-inner {
   position: sticky;
