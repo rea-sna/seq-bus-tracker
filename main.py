@@ -20,6 +20,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from google.transit import gtfs_realtime_pb2
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 import pandas as pd
 import numpy as np
 import requests
@@ -80,16 +82,24 @@ download_gtfs_if_needed()
 
 # ── Thread-local SQLite connection ────────────────────────────────────────────
 _db_local = threading.local()
+_db_generation = 0  # GTFSリロード時にインクリメント → スレッドローカル接続を自動再接続させる
 
 
 def get_db() -> sqlite3.Connection:
-    """スレッドローカルなSQLite接続を返す"""
-    if not hasattr(_db_local, "conn") or _db_local.conn is None:
+    """スレッドローカルなSQLite接続を返す（世代が変わると自動再接続）"""
+    if (not hasattr(_db_local, "conn") or _db_local.conn is None
+            or getattr(_db_local, "generation", -1) != _db_generation):
+        if hasattr(_db_local, "conn") and _db_local.conn is not None:
+            try:
+                _db_local.conn.close()
+            except Exception:
+                pass
         conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         _db_local.conn = conn
+        _db_local.generation = _db_generation
     return _db_local.conn
 
 
@@ -231,74 +241,92 @@ build_gtfs_db()
 _stops_lat_arr: np.ndarray = np.array([], dtype=np.float32)
 _stops_lon_arr: np.ndarray = np.array([], dtype=np.float32)
 
-try:
-    _boot = sqlite3.connect(DB_PATH)
-    _boot.row_factory = sqlite3.Row
+# グローバル変数の初期化（_load_gtfs_to_memory で上書きされる）
+stops_df = bus_routes_df = None
+trips_dict: dict = {}
+stop_routes_dict: dict = {}
+last_stop_by_trip: dict = {}
 
-    # stops（小さいので全件メモリに保持）
-    stops_df = pd.read_sql("SELECT * FROM stops", _boot)
-    stops_df["stop_lat"] = pd.to_numeric(stops_df["stop_lat"], errors="coerce").astype("float32").fillna(0.0)
-    stops_df["stop_lon"] = pd.to_numeric(stops_df["stop_lon"], errors="coerce").astype("float32").fillna(0.0)
-    for _col in ["location_type", "parent_station", "platform_code"]:
-        if _col in stops_df.columns:
-            stops_df[_col] = stops_df[_col].astype("category")
 
-    # routes（小さいのでメモリに保持）
-    bus_routes_df = pd.read_sql("SELECT * FROM routes", _boot).set_index("route_id")
+def _load_gtfs_to_memory():
+    """DBからグローバル変数へGTFSデータをロードする（起動時・週次更新時に呼び出す）"""
+    global stops_df, bus_routes_df, trips_dict, last_stop_by_trip, stop_routes_dict
+    global _stops_lat_arr, _stops_lon_arr, _db_generation
 
-    # trips を辞書化（リアルタイム処理で O(1) アクセス）
-    _trip_rows = _boot.execute(
-        "SELECT trip_id, route_id, trip_headsign, shape_id, direction_id FROM trips"
-    ).fetchall()
-    trips_dict: dict = {
-        r["trip_id"]: {
-            "route_id":      r["route_id"]      or "",
-            "trip_headsign": r["trip_headsign"]  or "",
-            "shape_id":      r["shape_id"]       or "",
-            "direction_id":  r["direction_id"]   or "",
-        }
-        for r in _trip_rows
-    }
-    del _trip_rows
+    boot = sqlite3.connect(DB_PATH)
+    boot.row_factory = sqlite3.Row
+    try:
+        # stops（小さいので全件メモリに保持）
+        new_stops_df = pd.read_sql("SELECT * FROM stops", boot)
+        new_stops_df["stop_lat"] = pd.to_numeric(new_stops_df["stop_lat"], errors="coerce").astype("float32").fillna(0.0)
+        new_stops_df["stop_lon"] = pd.to_numeric(new_stops_df["stop_lon"], errors="coerce").astype("float32").fillna(0.0)
+        for _col in ["location_type", "parent_station", "platform_code"]:
+            if _col in new_stops_df.columns:
+                new_stops_df[_col] = new_stops_df[_col].astype("category")
 
-    # last_stop_by_trip（終着駅フィルタ用）
-    _ls_rows = _boot.execute("SELECT trip_id, last_stop_id FROM last_stops").fetchall()
-    last_stop_by_trip: dict = {r["trip_id"]: r["last_stop_id"] for r in _ls_rows}
-    del _ls_rows
+        # routes（小さいのでメモリに保持）
+        new_bus_routes_df = pd.read_sql("SELECT * FROM routes", boot).set_index("route_id")
 
-    # stop_routes_dict（バス停カード表示用）
-    _sr_rows = _boot.execute(
-        "SELECT stop_id, route_short_name, route_color, route_text_color FROM stop_routes"
-    ).fetchall()
-    _sr_tmp: dict = {}
-    for r in _sr_rows:
-        sid  = str(r["stop_id"])
-        name = str(r["route_short_name"])
-        if sid not in _sr_tmp:
-            _sr_tmp[sid] = {}
-        if name not in _sr_tmp[sid]:
-            rc  = str(r["route_color"]      or "")
-            rtc = str(r["route_text_color"] or "")
-            _sr_tmp[sid][name] = {
-                "name":       name,
-                "color":      f"#{rc}"  if rc  else "",
-                "text_color": f"#{rtc}" if rtc else "",
+        # trips を辞書化（リアルタイム処理で O(1) アクセス）
+        _trip_rows = boot.execute(
+            "SELECT trip_id, route_id, trip_headsign, shape_id, direction_id FROM trips"
+        ).fetchall()
+        new_trips_dict = {
+            r["trip_id"]: {
+                "route_id":      r["route_id"]      or "",
+                "trip_headsign": r["trip_headsign"]  or "",
+                "shape_id":      r["shape_id"]       or "",
+                "direction_id":  r["direction_id"]   or "",
             }
-    stop_routes_dict: dict = {
-        sid: sorted(
-            routes.values(),
-            key=lambda r: (not r["name"].isdigit(),
-                           r["name"].zfill(6) if r["name"].isdigit() else r["name"])
-        )
-        for sid, routes in _sr_tmp.items()
-    }
-    del _sr_tmp, _sr_rows
+            for r in _trip_rows
+        }
+        del _trip_rows
 
-    _boot.close()
+        # last_stop_by_trip（終着駅フィルタ用）
+        _ls_rows = boot.execute("SELECT trip_id, last_stop_id FROM last_stops").fetchall()
+        new_last_stop_by_trip = {r["trip_id"]: r["last_stop_id"] for r in _ls_rows}
+        del _ls_rows
 
-    # numpy 配列を初期化
-    _stops_lat_arr = stops_df["stop_lat"].values
-    _stops_lon_arr = stops_df["stop_lon"].values
+        # stop_routes_dict（バス停カード表示用）
+        _sr_rows = boot.execute(
+            "SELECT stop_id, route_short_name, route_color, route_text_color FROM stop_routes"
+        ).fetchall()
+        _sr_tmp: dict = {}
+        for r in _sr_rows:
+            sid  = str(r["stop_id"])
+            name = str(r["route_short_name"])
+            if sid not in _sr_tmp:
+                _sr_tmp[sid] = {}
+            if name not in _sr_tmp[sid]:
+                rc  = str(r["route_color"]      or "")
+                rtc = str(r["route_text_color"] or "")
+                _sr_tmp[sid][name] = {
+                    "name":       name,
+                    "color":      f"#{rc}"  if rc  else "",
+                    "text_color": f"#{rtc}" if rtc else "",
+                }
+        new_stop_routes_dict = {
+            sid: sorted(
+                routes.values(),
+                key=lambda r: (not r["name"].isdigit(),
+                               r["name"].zfill(6) if r["name"].isdigit() else r["name"])
+            )
+            for sid, routes in _sr_tmp.items()
+        }
+        del _sr_tmp, _sr_rows
+
+    finally:
+        boot.close()
+
+    # アトミックにグローバル変数を更新
+    stops_df          = new_stops_df
+    bus_routes_df     = new_bus_routes_df
+    trips_dict        = new_trips_dict
+    last_stop_by_trip = new_last_stop_by_trip
+    stop_routes_dict  = new_stop_routes_dict
+    _stops_lat_arr    = new_stops_df["stop_lat"].values
+    _stops_lon_arr    = new_stops_df["stop_lon"].values
+    _db_generation   += 1  # スレッドローカルのDB接続を次回アクセス時に再接続させる
 
     gc.collect()
     try:
@@ -309,12 +337,79 @@ try:
 
     print(f"✅ GTFS loaded — {len(stops_df)} stops, {len(bus_routes_df)} bus routes, {len(trips_dict)} trips")
 
+
+try:
+    _load_gtfs_to_memory()
 except Exception as _e:
     print(f"⚠️  GTFS load failed: {_e}")
-    stops_df = bus_routes_df = None
-    trips_dict = {}
-    stop_routes_dict = {}
-    last_stop_by_trip = {}
+
+
+# ── GTFS週次自動更新 ──────────────────────────────────────────────────────────
+_gtfs_update_lock = threading.Lock()
+
+
+def _update_gtfs():
+    """GTFSスタティックデータを再ダウンロードしてDBとメモリを更新する（週1回実行）"""
+    if not _gtfs_update_lock.acquire(blocking=False):
+        print("⚠️  GTFS update already in progress, skipping")
+        return
+    try:
+        import zipfile
+        print("🔄 GTFS weekly update started...")
+
+        # 古いCSVを削除（DB再構築のため）
+        for fname in ["stops.txt", "routes.txt", "trips.txt", "stop_times.txt",
+                      "shapes.txt", "calendar.txt", "calendar_dates.txt"]:
+            p = os.path.join(GTFS_DIR, fname)
+            if os.path.exists(p):
+                os.remove(p)
+
+        # ダウンロード
+        zip_path = os.path.join(GTFS_DIR, "gtfs.zip")
+        print("  Downloading GTFS...")
+        response = requests.get(GTFS_URL, stream=True, timeout=300)
+        response.raise_for_status()
+        with open(zip_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                f.write(chunk)
+        print("  Extracting GTFS...")
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(GTFS_DIR)
+        os.remove(zip_path)
+
+        # 旧DBを削除して再構築
+        if os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
+        build_gtfs_db()
+
+        # メモリ上のグローバル変数を再ロード
+        _load_gtfs_to_memory()
+        print("✅ GTFS weekly update completed")
+
+    except Exception as e:
+        print(f"❌ GTFS weekly update failed: {e}")
+    finally:
+        _gtfs_update_lock.release()
+
+
+_scheduler = BackgroundScheduler(timezone="Australia/Brisbane")
+
+
+@app.on_event("startup")
+async def start_scheduler():
+    _scheduler.add_job(
+        _update_gtfs,
+        CronTrigger(day_of_week="mon", hour=3, minute=0, timezone="Australia/Brisbane"),
+        id="gtfs_weekly_update",
+        replace_existing=True,
+    )
+    _scheduler.start()
+    print("📅 GTFS weekly update scheduled — every Monday 03:00 Brisbane time")
+
+
+@app.on_event("shutdown")
+async def stop_scheduler():
+    _scheduler.shutdown(wait=False)
 
 # ── Timezone ──────────────────────────────────────────────────────────────────
 # ブリスベンは UTC+10 固定（サマータイムなし）
@@ -870,6 +965,7 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
 
             arrivals.append({
                 "trip_id":          trip_id,
+                "vehicle_id":       entity.trip_update.vehicle.id or "",
                 "stop_id":          str(stu.stop_id),
                 "platform_code":    platform_map.get(str(stu.stop_id), ""),
                 "route_short_name": route_short,
@@ -993,6 +1089,7 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
 
             arrivals.append({
                 "trip_id":          trip_id,
+                "vehicle_id":       entity.trip_update.vehicle.id or "",
                 "stop_id":          str(stu.stop_id),
                 "platform_code":    "",
                 "route_short_name": route_short,
@@ -1113,6 +1210,7 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
 
             arrivals.append({
                 "trip_id":          trip_id,
+                "vehicle_id":       entity.trip_update.vehicle.id or "",
                 "stop_id":          stop_id,
                 "platform_code":    "",
                 "route_short_name": route_short,
@@ -1245,6 +1343,36 @@ def get_trip_stops(request: Request, trip_id: str):
         })
 
     return {"trip_id": trip_id, "stops": stops_list}
+
+
+@app.get("/api/vehicles/{vehicle_id}/position")
+@limiter.limit("60/minute")
+def get_vehicle_position_by_id(request: Request, vehicle_id: str):
+    """vehicle_id でバス車両の現在位置を返す（折り返し前の追跡用）"""
+    try:
+        feed = get_vehicle_feed()
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Translink API error: {e}")
+
+    for entity in feed.entity:
+        if not entity.HasField("vehicle"):
+            continue
+        vp = entity.vehicle
+        if vp.vehicle.id != vehicle_id:
+            continue
+        pos = vp.position
+        return {
+            "lat":             float(pos.latitude),
+            "lon":             float(pos.longitude),
+            "bearing":         float(pos.bearing),
+            "speed":           float(pos.speed),
+            "timestamp":       int(vp.timestamp) if vp.timestamp else None,
+            "current_stop_id": vp.stop_id or None,
+            "current_status":  int(vp.current_status),
+            "current_trip_id": vp.trip.trip_id or None,
+        }
+
+    return None
 
 
 @app.get("/api/trips/{trip_id:path}/vehicle")

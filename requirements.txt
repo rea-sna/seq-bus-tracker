@@ -5,3 +5,4 @@ gtfs-realtime-bindings
 pandas
 numpy
 slowapi
+apscheduler
