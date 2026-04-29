@@ -1023,6 +1023,7 @@ function renderStopHeaderRoutes(routes) {
 }
 
 function selectStop(stopId, stopName, lat, lon, isTerminal = false, routes = []) {
+  history.replaceState(null, '', `?stop=${encodeURIComponent(stopId)}`);
   currentStopId = stopId;
   currentStopRoutes = routes;
   currentIsTerminal = isTerminal;
@@ -1756,3 +1757,15 @@ resetInactivityTimer();
 
 // 初期言語を適用
 applyI18n();
+
+// URLパラメータ ?stop=<stop_id> でバス停を初期選択
+(function () {
+  const stopId = new URLSearchParams(location.search).get('stop');
+  if (!stopId) return;
+  fetch(`${API}/api/stops/${encodeURIComponent(stopId)}`)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (data) selectStop(data.stop_id, data.stop_name, data.stop_lat, data.stop_lon, data.is_terminal || false, data.routes || []);
+    })
+    .catch(() => {});
+})();

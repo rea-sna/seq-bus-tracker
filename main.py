@@ -1261,12 +1261,14 @@ def get_stop(request: Request, stop_id: str):
         routes = _merge_routes(child_ids) if child_ids else _merge_routes([str(r["stop_id"])])
     else:
         routes = _merge_routes([str(r["stop_id"])])
+    is_terminal = loc_type == "1"
     return {
-        "stop_id":   r["stop_id"],
-        "stop_name": r["stop_name"],
-        "stop_lat":  float(r["stop_lat"]),
-        "stop_lon":  float(r["stop_lon"]),
-        "routes":    routes,
+        "stop_id":     r["stop_id"],
+        "stop_name":   r["stop_name"],
+        "stop_lat":    float(r["stop_lat"]),
+        "stop_lon":    float(r["stop_lon"]),
+        "routes":      routes,
+        "is_terminal": is_terminal,
     }
 
 
