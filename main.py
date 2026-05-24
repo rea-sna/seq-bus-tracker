@@ -736,13 +736,12 @@ def search_stops(request: Request, q: str = ""):
                 if sib.get("location_type", "") == "1":
                     continue
                 pf = sib.get("platform_code", "") if has_platform else ""
-                sc = sib.get("stop_code",     "") if has_stopcode else ""
                 platforms.append({
                     "stop_id":       sib["stop_id"],
                     "stop_name":     sib["stop_name"],
                     "stop_lat":      float(sib["stop_lat"]),
                     "stop_lon":      float(sib["stop_lon"]),
-                    "platform_code": pf or sc,
+                    "platform_code": pf,
                 })
 
             results.append({
@@ -851,13 +850,12 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
                 if str(sib.get("location_type", "")) == "1":
                     continue
                 pf = sib.get("platform_code", "") if has_platform else ""
-                sc = sib.get("stop_code",     "") if has_stopcode else ""
                 platforms.append({
                     "stop_id":       str(sib["stop_id"]),
                     "stop_name":     str(sib["stop_name"]),
                     "stop_lat":      float(sib["stop_lat"]),
                     "stop_lon":      float(sib["stop_lon"]),
-                    "platform_code": str(pf or sc),
+                    "platform_code": str(pf),
                 })
             results.append({
                 "stop_id":         str(parent),
@@ -934,8 +932,7 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False,
     platform_map = {}
     for _, r in children.iterrows():
         pf = r.get("platform_code", "") if has_platform else ""
-        sc = r.get("stop_code",     "") if has_stopcode else ""
-        platform_map[r["stop_id"]] = pf or sc or r["stop_name"]
+        platform_map[r["stop_id"]] = pf
 
     child_ids = set(platform_map.keys())
     if not child_ids:
