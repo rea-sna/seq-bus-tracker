@@ -315,7 +315,7 @@ function renderFavorites() {
     const routesJson = escAttr(JSON.stringify(f.routes || []));
     return `
     <div class="fav-chip${f.stop_id === currentStopId ? ' active' : ''}"
-         onclick="selectStop('${f.stop_id}','${escAttr(f.stop_name)}','${f.stop_lat}','${f.stop_lon}',${f.is_terminal || false},JSON.parse(this.dataset.routes))"
+         onclick="if(currentTab!=='stop')switchTab('stop');selectStop('${f.stop_id}','${escAttr(f.stop_name)}','${f.stop_lat}','${f.stop_lon}',${f.is_terminal || false},JSON.parse(this.dataset.routes))"
          data-routes="${routesJson}">
       <span class="fav-chip-name">${escHtml(f.stop_name)}</span>
       <button class="fav-chip-remove" onclick="removeFavorite(event,'${f.stop_id}')">×</button>
@@ -1358,6 +1358,10 @@ function selectStop(stopId, stopName, lat, lon, isTerminal = false, routes = [])
   activeArrivalTripId = null;
   activeArrivalFilter = { platform: null, direction: null, route: null };
   showAllArrivals = false;
+  lastArrivals = [];
+
+  const list = document.getElementById('arrivals-list');
+  list.innerHTML = `<div class="state-msg"><span class="icon">⏳</span><p>${t('fetchingData')}</p></div>`;
 
   stopList.classList.remove('visible');
   searchInput.value = stopName;
