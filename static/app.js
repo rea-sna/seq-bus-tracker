@@ -11,11 +11,16 @@ function resolveRouteColor(routeShort, routeColor) {
 
 let autoRefreshEnabled = true;
 let demoMode = false;
+let timetableMode = false;
+let timetableDate = null; // 'YYYY-MM-DD'
+let timetableTime = null; // 'HH:MM'
 let currentStopRoutes = [];
 let currentTab = 'stop';
 let currentRouteId = null;
 let currentRouteDirection = 0;
 let currentRouteData = null;
+let mapTabRouteData = null;
+let mapTabDirection = 0;
 let currentStopId = null;  // ターミナルはparent_id、通常停はstop_id
 let currentIsTerminal = false;
 let currentStopLat = null;
@@ -76,6 +81,11 @@ const STRINGS = {
     subtitle: 'Real-time arrivals powered by Translink GTFS-RT',
     alertPanelTitle: 'Service Alerts',
     alertBtnLabel: 'Service Alerts',
+    settingsTitle: 'Settings',
+    settingsTheme: 'Theme',
+    settingsThemeDark: 'Dark',
+    settingsThemeLight: 'Light',
+    settingsLang: 'Language',
     autoLabel: 'Auto',
     refreshBtnLabel: '↺ Refresh',
     now: 'Now',
@@ -94,12 +104,24 @@ const STRINGS = {
     demoBanner: 'Demo mode — showing timetable from 8:00 AM today',
     tabStop: 'Stop',
     tabRoute: 'Route',
+    tabMap: 'Map',
+    mapTabHint: 'Search a route number to view its map',
     routeSearchPlaceholder: 'Search by route number…',
     noRoutesFound: 'No routes found',
     routeDir0: 'Outbound',
     routeDir1: 'Inbound',
     rtUnavailable: 'Real-time data unavailable — showing scheduled times only.',
     lastStop: 'Terminates here',
+    timetableGo: 'Go',
+    timetableBanner: (date, time) => `Timetable from ${date} ${time}`,
+    liveMode: 'Live',
+    timetableMode: 'Timetable',
+    today: 'Today',
+    viewStopTimetable: 'View timetable',
+    timetableMorning: 'Morning (before noon)',
+    timetableAfternoon: 'Afternoon (12–18)',
+    timetableEvening: 'Evening (after 18)',
+    noServiceOnDate: 'No service on this date',
   },
   ja: {
     searchPlaceholder: 'バス停を検索…',
@@ -142,6 +164,11 @@ const STRINGS = {
     subtitle: 'Translinkリアルタイム情報',
     alertPanelTitle: 'サービス情報',
     alertBtnLabel: 'サービス情報',
+    settingsTitle: '設定',
+    settingsTheme: 'テーマ',
+    settingsThemeDark: 'ダーク',
+    settingsThemeLight: 'ライト',
+    settingsLang: '言語',
     autoLabel: '自動',
     refreshBtnLabel: '↺ 更新',
     now: 'まもなく',
@@ -160,12 +187,24 @@ const STRINGS = {
     demoBanner: 'デモモード — 本日 08:00 からの時刻表を表示中',
     tabStop: 'バス停',
     tabRoute: '路線',
+    tabMap: 'マップ',
+    mapTabHint: '路線番号を検索してマップを表示',
     routeSearchPlaceholder: '路線番号で検索…',
     noRoutesFound: '路線が見つかりません',
     routeDir0: '下り',
     routeDir1: '上り',
     rtUnavailable: 'リアルタイム情報を取得できません。時刻表の予定時刻を表示しています。',
     lastStop: '当駅止まり',
+    timetableGo: '表示',
+    timetableBanner: (date, time) => `時刻表: ${date} ${time}～`,
+    liveMode: 'リアルタイム',
+    timetableMode: '時刻表',
+    today: '今日',
+    viewStopTimetable: '時刻表を見る',
+    timetableMorning: '午前（〜12時）',
+    timetableAfternoon: '午後（12〜18時）',
+    timetableEvening: '夜間（18時〜）',
+    noServiceOnDate: 'この日の運行はありません',
   }
 };
 
@@ -181,8 +220,14 @@ function applyI18n() {
   });
   const si = document.getElementById('search-input');
   if (si && !si.value) si.placeholder = t('searchPlaceholder');
-  const langLabel = document.getElementById('lang-label');
-  if (langLabel) langLabel.textContent = currentLang === 'en' ? '日本語' : 'English';
+  const langSw = document.getElementById('settings-lang-switch');
+  if (langSw) {
+    langSw.classList.toggle('active', currentLang === 'en');
+    const val = document.getElementById('settings-lang-val');
+    if (val) val.textContent = currentLang === 'en' ? 'English' : '日本語';
+  }
+  const themeVal = document.getElementById('settings-theme-val');
+  if (themeVal) themeVal.textContent = getEffectiveTheme() === 'dark' ? t('settingsThemeDark') : t('settingsThemeLight');
 }
 
 function toggleLang() {
@@ -314,10 +359,11 @@ function getEffectiveTheme() {
 
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
-  const btn = document.getElementById('theme-toggle');
-  if (btn) {
-    btn.textContent = theme === 'dark' ? '☀' : '🌙';
-    btn.title = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  const sw = document.getElementById('settings-theme-switch');
+  if (sw) {
+    sw.classList.toggle('active', theme === 'dark');
+    const val = document.getElementById('settings-theme-val');
+    if (val) val.textContent = theme === 'dark' ? t('settingsThemeDark') : t('settingsThemeLight');
   }
   updateMapTiles(theme);
 }
@@ -355,6 +401,7 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () 
 
 // 初期テーマを適用（anti-flash スクリプトと同期）
 applyTheme(getEffectiveTheme());
+
 
 let stopMarker = null;
 let routeLayer = null;
@@ -592,10 +639,13 @@ function clearDisplay() {
   activeArrivalFilter = { platform: null, direction: null, route: null };
   lastArrivals = [];
 
+  history.replaceState(null, '', window.location.pathname);
+
   setRtUnavailableBanner(false);
   if (stopMarker) { map.removeLayer(stopMarker); stopMarker = null; }
   clearRoute();
   clearError();
+  _clearTimetableState();
 
   document.getElementById('stop-header').classList.remove('visible');
   document.getElementById('main-panel').classList.remove('visible');
@@ -605,6 +655,7 @@ function clearDisplay() {
   document.getElementById('arrivals-filter-bar').style.display = 'none';
   document.getElementById('stop-header-name').textContent = '—';
   document.getElementById('stop-header-routes').innerHTML = '';
+  document.getElementById('mode-switch').style.display = 'none';
 
   searchInput.value = '';
   searchInput.placeholder = t('searchPlaceholder');
@@ -654,7 +705,7 @@ function calcStopsAway(pos) {
   return { stopsAway: diff, vehicleStop, intermediateStops };
 }
 
-function updateVehiclePanel(pos, lineColor) {
+function updateVehiclePanel(pos, lineColor, vehicleId = null) {
   const panel = document.getElementById('vehicle-panel');
   if (!panel) return;
   if (!pos) {
@@ -685,12 +736,21 @@ function updateVehiclePanel(pos, lineColor) {
     }
   }
 
+  const vehicleLabel = (() => {
+    if (!vehicleId) return '';
+    const parts = vehicleId.split('_');
+    if (parts.length < 2) return '';
+    const nums = parts[1].replace(/\D/g, '');
+    return nums ? `<span class="vehicle-id-badge">#${nums}</span>` : '';
+  })();
+
   panel.style.display = 'flex';
   panel.innerHTML = `
     <div class="vehicle-header">
       <div class="vehicle-header-left">
         <span class="vehicle-live-dot"></span>
         <span>${t('vehicleLive')}${agoStr}</span>
+        ${vehicleLabel}
       </div>
       ${proximityStr}
     </div>
@@ -718,7 +778,7 @@ async function updateVehicleMarker(tripId, lineColor, vehicleId = null) {
 
     if (!pos) {
       if (vehicleMarker) { map.removeLayer(vehicleMarker); vehicleMarker = null; }
-      updateVehiclePanel(null);
+      updateVehiclePanel(null, null, vehicleId);
       return;
     }
     const icon = makeVehicleIcon(pos.bearing, lineColor, isPreTurnaround);
@@ -731,7 +791,7 @@ async function updateVehicleMarker(tripId, lineColor, vehicleId = null) {
         .addTo(map)
         .bindTooltip(tooltip, { direction: 'top', offset: [0, -6], className: 'stop-tooltip' });
     }
-    updateVehiclePanel(pos, lineColor);
+    updateVehiclePanel(pos, lineColor, vehicleId);
 
     // 3つ前のバス停に到達したら（停車中も含む）、バスの現在位置と選択中のバス停が収まるよう拡大（一度だけ）
     const proximity = calcStopsAway(pos);
@@ -830,7 +890,7 @@ searchInput.addEventListener('input', () => {
   clearTimeout(searchTimer);
   const q = searchInput.value.trim();
   if (q.length < 1) { stopList.innerHTML = ''; stopList.classList.remove('visible'); return; }
-  if (currentTab === 'route') {
+  if (currentTab === 'route' || currentTab === 'map') {
     searchTimer = setTimeout(() => fetchRoutes(q), 300);
   } else {
     if (q.length < 2) { stopList.innerHTML = ''; stopList.classList.remove('visible'); return; }
@@ -839,18 +899,47 @@ searchInput.addEventListener('input', () => {
 });
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
+
+function openSettings() {
+  document.getElementById('settings-overlay').classList.add('open');
+  document.getElementById('settings-modal').classList.add('open');
+}
+
+function closeSettings() {
+  document.getElementById('settings-overlay').classList.remove('open');
+  document.getElementById('settings-modal').classList.remove('open');
+}
+
 function switchTab(tab) {
+  clearDisplay();
   currentTab = tab;
   document.getElementById('tab-stop').classList.toggle('active', tab === 'stop');
   document.getElementById('tab-route').classList.toggle('active', tab === 'route');
+  document.getElementById('tab-map').classList.toggle('active', tab === 'map');
+  document.body.classList.toggle('tab-map', tab === 'map');
   stopList.innerHTML = '';
   stopList.classList.remove('visible');
-  searchInput.value = '';
-  searchInput.placeholder = tab === 'route' ? t('routeSearchPlaceholder') : t('searchPlaceholder');
-  document.getElementById('gps-btn').style.display = tab === 'route' ? 'none' : '';
+  document.getElementById('gps-btn').style.display = tab === 'stop' ? '' : 'none';
   currentRouteId = null;
   currentRouteData = null;
   document.getElementById('route-stops-panel').style.display = 'none';
+
+  if (tab === 'map') {
+    searchInput.placeholder = t('routeSearchPlaceholder');
+    setTimeout(() => map.invalidateSize(), 50);
+    const hdr = document.getElementById('map-tab-header');
+    if (!mapTabRouteData) {
+      hdr.innerHTML = `<p class="map-tab-hint">${t('mapTabHint')}</p>`;
+    }
+  } else {
+    searchInput.placeholder = tab === 'route' ? t('routeSearchPlaceholder') : t('searchPlaceholder');
+    mapTabRouteData = null;
+    mapTabDirection = 0;
+    document.getElementById('map-tab-header').innerHTML = '';
+    document.getElementById('map-tab-stops-panel').innerHTML = '';
+    if (routeLayer && !currentStopId) { map.removeLayer(routeLayer); routeLayer = null; }
+    if (stopDotLayer && !currentStopId) { map.removeLayer(stopDotLayer); stopDotLayer = null; }
+  }
 }
 
 // ── Route search ──────────────────────────────────────────────────────────────
@@ -870,8 +959,11 @@ function renderRouteList(routes) {
   stopList.innerHTML = routes.map(r => {
     const bg = resolveRouteColor(r.route_short_name, r.route_color) || r.route_color || 'var(--accent2)';
     const fg = r.route_text_color || '#fff';
+    const fn = currentTab === 'map'
+      ? `selectRouteForMap('${escAttr(r.route_id)}','${escAttr(r.route_short_name)}','${escAttr(r.route_color)}','${escAttr(r.route_text_color)}')`
+      : `selectRoute('${escAttr(r.route_id)}','${escAttr(r.route_short_name)}','${escAttr(r.route_color)}','${escAttr(r.route_text_color)}')`;
     return `
-      <div class="stop-item route-list-item" onclick="selectRoute('${escAttr(r.route_id)}','${escAttr(r.route_short_name)}','${escAttr(r.route_color)}','${escAttr(r.route_text_color)}')">
+      <div class="stop-item route-list-item" onclick="${fn}">
         <span class="route-list-badge" style="background:${bg};color:${fg}">${escHtml(r.route_short_name)}</span>
         <span class="route-list-name">${escHtml(r.route_long_name)}</span>
       </div>`;
@@ -914,6 +1006,10 @@ function renderRouteStops() {
     return `<button class="route-dir-btn${active}" onclick="switchRouteDirection(${i})">${escHtml(label)}</button>`;
   }).join('');
 
+  const rId = escAttr(currentRouteData.routeId);
+  const rShort = escAttr(routeShort);
+  const rColor = escAttr(routeColor);
+  const rTextColor = escAttr(routeTextColor);
   const stopItems = data.stops.map((s, i) => {
     const isLast = i === data.stops.length - 1;
     const routesJson = escAttr(JSON.stringify(s.routes || []));
@@ -927,6 +1023,9 @@ function renderRouteStops() {
           ${!isLast ? `<div class="route-stop-line" style="background:${bg}"></div>` : '<div class="route-stop-line-spacer"></div>'}
         </div>
         <span class="route-stop-name">${escHtml(s.stop_name)}</span>
+        <button class="route-stop-timetable-btn"
+                title="${t('viewStopTimetable')}"
+                onclick="event.stopPropagation();openStopTimetableModal('${escAttr(s.stop_id)}','${escAttr(s.stop_name)}','${rId}','${rShort}','${rColor}','${rTextColor}')">📅</button>
       </div>`;
   }).join('');
 
@@ -946,6 +1045,229 @@ function renderRouteStops() {
 function switchRouteDirection(dir) {
   currentRouteDirection = dir;
   renderRouteStops();
+}
+
+// ── Map tab ───────────────────────────────────────────────────────────────────
+async function selectRouteForMap(routeId, routeShort, routeColor, routeTextColor) {
+  stopList.classList.remove('visible');
+  stopList.innerHTML = '';
+  searchInput.value = '';
+  mapTabDirection = 0;
+  const bg = resolveRouteColor(routeShort, routeColor) || routeColor || 'var(--accent2)';
+
+  if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+  if (stopDotLayer) { map.removeLayer(stopDotLayer); stopDotLayer = null; }
+  document.getElementById('map-tab-stops-panel').innerHTML = '';
+  const hint = document.getElementById('map-hint');
+  hint.innerHTML = `<span style="color:var(--muted)">${t('mapLoading')}</span>`;
+  hint.style.display = '';
+
+  try {
+    const [res0, res1] = await Promise.all([
+      fetch(`${API}/api/routes/${encodeURIComponent(routeId)}/stops?direction=0`),
+      fetch(`${API}/api/routes/${encodeURIComponent(routeId)}/stops?direction=1`),
+    ]);
+    const data0 = res0.ok ? await res0.json() : null;
+    const data1 = res1.ok ? await res1.json() : null;
+    mapTabRouteData = { routeId, routeShort, routeColor, routeTextColor, bg, directions: [data0, data1] };
+    await _renderMapTab();
+  } catch {
+    document.getElementById('map-hint').innerHTML = `<span style="color:var(--muted)">${t('fetchError')}</span>`;
+  }
+}
+
+function _renderMapTabStopsPanel(data) {
+  const { routeShort, routeTextColor, bg, directions } = mapTabRouteData;
+  const fg = routeTextColor || '#fff';
+  const panel = document.getElementById('map-tab-stops-panel');
+
+  const dirBtns = [0, 1].map(i => {
+    if (!directions[i]) return '';
+    const label = i === 0 ? t('routeDir0') : t('routeDir1');
+    const active = i === mapTabDirection ? ' active' : '';
+    return `<button class="route-dir-btn${active}" onclick="switchMapTabDirection(${i})">${escHtml(label)}</button>`;
+  }).filter(Boolean).join('');
+
+  const stops = data.stops || [];
+  const fromTo = stops.length >= 2
+    ? `${stops[0].stop_name} — ${stops[stops.length - 1].stop_name}`
+    : (data.headsign || '');
+
+  const stopItems = stops.map((s, i) => {
+    const isLast = i === stops.length - 1;
+    return `
+      <div class="map-tab-stop-item${isLast ? ' last' : ''}"
+           onclick="mapTabPanToStop(${s.stop_lat},${s.stop_lon})">
+        <div class="route-stop-line-wrap">
+          ${i > 0 ? `<div class="route-stop-line" style="background:${bg}"></div>` : '<div class="route-stop-line-spacer"></div>'}
+          <div class="route-stop-dot" style="border-color:${bg}"></div>
+          ${!isLast ? `<div class="route-stop-line" style="background:${bg}"></div>` : '<div class="route-stop-line-spacer"></div>'}
+        </div>
+        <span class="route-stop-name">${escHtml(s.stop_name)}</span>
+      </div>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <div class="route-stops-header">
+      <div class="route-stops-title">
+        <span class="route-stops-badge" style="background:${bg};color:${fg}">${escHtml(routeShort)}</span>
+        <span class="route-stops-headsign">${escHtml(fromTo)}</span>
+      </div>
+      <div class="route-dir-btns">${dirBtns}</div>
+    </div>
+    <div class="route-stops-list">${stopItems}</div>`;
+}
+
+function mapTabPanToStop(lat, lon) {
+  map.setView([lat, lon], Math.max(map.getZoom(), 15), { animate: true });
+}
+
+async function _renderMapTab() {
+  if (!mapTabRouteData) return;
+  const { bg, directions } = mapTabRouteData;
+  const data = directions[mapTabDirection] || directions[mapTabDirection === 0 ? 1 : 0];
+
+  if (!data) return;
+  _renderMapTabStopsPanel(data);
+
+  const hint = document.getElementById('map-hint');
+  if (!data.shape_id) {
+    hint.innerHTML = `<span style="color:var(--muted)">${t('mapNoShape')}</span>`;
+    return;
+  }
+
+  if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+  if (stopDotLayer) { map.removeLayer(stopDotLayer); stopDotLayer = null; }
+
+  const shapeRes = await fetch(`${API}/api/shapes/${encodeURIComponent(data.shape_id)}`).catch(() => null);
+  if (!shapeRes || !shapeRes.ok) {
+    hint.innerHTML = `<span style="color:var(--muted)">${t('mapNoShape')}</span>`;
+    return;
+  }
+  const shapeData = await shapeRes.json();
+  const coords = shapeData.coords.map(c => [c[0], c[1]]);
+  if (!coords.length) {
+    hint.innerHTML = `<span style="color:var(--muted)">${t('mapNoShape')}</span>`;
+    return;
+  }
+
+  const glowOuter = L.polyline(coords, { color: bg, weight: 14, opacity: 0.10, lineJoin: 'round' });
+  const glowInner = L.polyline(coords, { color: bg, weight: 7,  opacity: 0.28, lineJoin: 'round' });
+  const coreLine  = L.polyline(coords, { color: bg, weight: 3,  opacity: 1.00, lineJoin: 'round' });
+  routeLayer = L.featureGroup([glowOuter, glowInner, coreLine]).addTo(map);
+
+  // バス停ドットを描画
+  const stops = data.stops || [];
+  if (stops.length) {
+    stopDotLayer = L.layerGroup();
+    stops.forEach(s => {
+      const lat = parseFloat(s.stop_lat);
+      const lon = parseFloat(s.stop_lon);
+      if (isNaN(lat) || isNaN(lon)) return;
+      L.circleMarker([lat, lon], {
+        radius: 4,
+        fillColor: '#ffffff',
+        color: bg,
+        weight: 1.5,
+        opacity: 1,
+        fillOpacity: 0.9,
+      }).bindTooltip(escHtml(s.stop_name), {
+        direction: 'top', offset: [0, -4], className: 'stop-tooltip'
+      }).addTo(stopDotLayer);
+    });
+    stopDotLayer.addTo(map);
+  }
+
+  map.fitBounds(routeLayer.getBounds(), { padding: [28, 28] });
+  hint.style.display = 'none';
+}
+
+async function switchMapTabDirection(dir) {
+  mapTabDirection = dir;
+  if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+  if (stopDotLayer) { map.removeLayer(stopDotLayer); stopDotLayer = null; }
+  const hint = document.getElementById('map-hint');
+  hint.innerHTML = `<span style="color:var(--muted)">${t('mapLoading')}</span>`;
+  hint.style.display = '';
+  await _renderMapTab();
+}
+
+// ── Stop timetable modal ──────────────────────────────────────────────────────
+let _ttStopId = null;
+let _ttRouteId = null;
+
+async function openStopTimetableModal(stopId, stopName, routeId, routeShort, routeColor, routeTextColor) {
+  _ttStopId = stopId;
+  _ttRouteId = routeId;
+  const bg = resolveRouteColor(routeShort, routeColor) || routeColor || 'var(--accent2)';
+  const fg = routeTextColor || '#fff';
+
+  document.getElementById('stop-tt-title').innerHTML =
+    `<span class="routes-badge" style="background:${bg};color:${fg};font-family:'Space Mono',monospace;font-size:13px;font-weight:700;padding:3px 10px;border-radius:5px">${escHtml(routeShort)}</span>
+     <span style="font-size:14px;font-weight:600">${escHtml(stopName)}</span>`;
+
+  const today = new Date();
+  document.getElementById('stop-tt-date').value =
+    `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+  document.getElementById('stop-tt-overlay').classList.add('open');
+  document.getElementById('stop-tt-modal').classList.add('open');
+  await loadStopTimetableModal();
+}
+
+async function loadStopTimetableModal() {
+  const date = document.getElementById('stop-tt-date').value;
+  const content = document.getElementById('stop-tt-content');
+  content.innerHTML = `<div class="stop-tt-loading">${t('mapLoading')}</div>`;
+  try {
+    const res = await fetch(`${API}/api/stops/${encodeURIComponent(_ttStopId)}/timetable?route_id=${encodeURIComponent(_ttRouteId)}&date=${encodeURIComponent(date)}`);
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+
+    if (!data.departures.length) {
+      content.innerHTML = `<div class="stop-tt-loading">${t('noServiceOnDate')}</div>`;
+      return;
+    }
+
+    const [y, m, d] = date.split('-').map(Number);
+    const now = new Date();
+    const isToday = now.getFullYear() === y && (now.getMonth() + 1) === m && now.getDate() === d;
+    const nowMins = isToday ? now.getHours() * 60 + now.getMinutes() : -1;
+
+    const groups = [
+      { label: t('timetableMorning'), items: [] },
+      { label: t('timetableAfternoon'), items: [] },
+      { label: t('timetableEvening'), items: [] },
+    ];
+
+    data.departures.forEach(dep => {
+      const [h, min] = dep.time.split(':').map(Number);
+      const totalMins = h * 60 + min;
+      const passed = isToday && totalMins < nowMins;
+      const chip = { time: dep.time, passed };
+      if (totalMins < 720) groups[0].items.push(chip);
+      else if (totalMins < 1080) groups[1].items.push(chip);
+      else groups[2].items.push(chip);
+    });
+
+    let html = '';
+    for (const g of groups) {
+      if (!g.items.length) continue;
+      html += `<div class="stop-tt-group-label">${g.label}</div><div class="stop-tt-grid">`;
+      g.items.forEach(c => {
+        html += `<span class="stop-tt-chip${c.passed ? ' passed' : ''}">${c.time}</span>`;
+      });
+      html += `</div>`;
+    }
+    content.innerHTML = html;
+  } catch {
+    content.innerHTML = `<div class="stop-tt-loading">${t('fetchError')}</div>`;
+  }
+}
+
+function closeStopTimetableModal() {
+  document.getElementById('stop-tt-overlay').classList.remove('open');
+  document.getElementById('stop-tt-modal').classList.remove('open');
 }
 
 async function fetchStops(q) {
@@ -1064,6 +1386,7 @@ function selectStop(stopId, stopName, lat, lon, isTerminal = false, routes = [])
   renderFavBtn();
   renderFavorites();
   document.getElementById('main-panel').classList.add('visible');
+  document.getElementById('mode-switch').style.display = '';
 
   setTimeout(() => map.invalidateSize(), 50);
 
@@ -1178,11 +1501,14 @@ async function fetchArrivals(stopId) {
   }
   try {
     const dp = demoMode ? '?demo=true' : '';
+    const timetableParams = (!demoMode && timetableMode && timetableDate)
+      ? `${dp ? '&' : '?'}date=${encodeURIComponent(timetableDate)}&from_time=${encodeURIComponent(timetableTime || '00:00')}`
+      : '';
     const endpoint = currentIsTerminal
-      ? `${API}/api/terminal/${stopId}/arrivals${dp}`
+      ? `${API}/api/terminal/${stopId}/arrivals${dp}${timetableParams}`
       : currentIsNameGrouped
-        ? `${API}/api/stops/multi/arrivals?ids=${currentGroupedStopIds.join(',')}${demoMode ? '&demo=true' : ''}`
-        : `${API}/api/stops/${stopId}/arrivals${dp}`;
+        ? `${API}/api/stops/multi/arrivals?ids=${currentGroupedStopIds.join(',')}${demoMode ? '&demo=true' : ''}${timetableMode && timetableDate ? `&date=${encodeURIComponent(timetableDate)}&from_time=${encodeURIComponent(timetableTime || '00:00')}` : ''}`
+        : `${API}/api/stops/${stopId}/arrivals${dp}${timetableParams}`;
     const res = await fetch(endpoint);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
@@ -1199,9 +1525,17 @@ async function fetchArrivals(stopId) {
     renderArrivals(filtered, showAllArrivals);
     clearError();
 
+    // 時刻表モードでは自動更新を停止
+    if (timetableMode && autoRefreshEnabled) {
+      clearTimeout(refreshTimer);
+      document.getElementById('refresh-bar').classList.remove('visible');
+      document.getElementById('auto-refresh-toggle').classList.remove('active');
+      autoRefreshEnabled = false;
+    }
+
     // 翌日便が含まれる場合は自動更新を停止し、5分おきに再チェック
     const hasTomorrow = lastArrivals.some(a => a.day_offset === 1);
-    if (hasTomorrow && autoRefreshEnabled) {
+    if (!timetableMode && hasTomorrow && autoRefreshEnabled) {
       clearTimeout(refreshTimer);
       document.getElementById('refresh-bar').classList.remove('visible');
       document.getElementById('auto-refresh-toggle').classList.remove('active');
@@ -1232,6 +1566,9 @@ async function fetchArrivals(stopId) {
         const a = filtered[newIdx];
         showRoute(a.shape_id, a.trip_id, a.route_short_name, a.headsign || a.route_long_name, a.route_color, a.stop_id, a.vehicle_id || null);
       } else if (filtered.length > 0) {
+        // 追跡中のバスが消えた場合、activeCardIndex をリセットしてから選択
+        // （リセットなしだと activeCardIndex===0 のときトグルオフになる）
+        activeCardIndex = null;
         onCardClick(0);
       }
     } else if (activeCardIndex === null && filtered.length > 0) {
@@ -1257,6 +1594,10 @@ function refreshArrivals() {
 }
 
 function renderArrivals(arrivals, showAll = false) {
+  if (!timetableMode) {
+    const rtOnly = arrivals.filter(a => !a.is_static);
+    arrivals = rtOnly.length > 0 ? rtOnly : arrivals; // RT便ゼロなら静的データをフォールバック表示
+  }
   const list = document.getElementById('arrivals-list');
   if (!arrivals.length) {
     const isFilteredEmpty = lastArrivals.length > 0;
@@ -1301,12 +1642,22 @@ function renderArrivals(arrivals, showAll = false) {
       ? `<span class="delay-badge last-stop">${t('lastStop')}</span>`
       : '';
 
-    const arrivalTimeHtml = isTomorrow
+    let arrivalTimeLabel = '';
+    if (timetableMode) {
+      const d = new Date(a.arrival_time * 1000);
+      const todayStr = new Date().toDateString();
+      const arrStr = d.toDateString();
+      arrivalTimeLabel = arrStr === todayStr ? t('today') : d.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
+    }
+    const arrivalTimeHtml = timetableMode
       ? `<div class="minutes later">${clockTime}</div>
-         <div class="minutes-label">${t('tomorrow')}</div>`
-      : `<div class="minutes ${minClass}">${minText}</div>
-         <div class="minutes-label">${label}</div>
-         ${min >= 10 ? `<div class="arrival-clock">${clockTime}</div>` : ''}`;
+         <div class="minutes-label">${arrivalTimeLabel}</div>`
+      : isTomorrow
+        ? `<div class="minutes later">${clockTime}</div>
+           <div class="minutes-label">${t('tomorrow')}</div>`
+        : `<div class="minutes ${minClass}">${minText}</div>
+           <div class="minutes-label">${label}</div>
+           ${min >= 10 ? `<div class="arrival-clock">${clockTime}</div>` : ''}`;
 
     return `
       <div class="arrival-card${active}" onclick="onCardClick(${i})" style="--route-color:${bgColor}">
@@ -1372,7 +1723,7 @@ function onCardClick(index) {
     return;
   }
   activeCardIndex = index;
-  renderArrivals(filtered);
+  renderArrivals(filtered, showAllArrivals);
   const a = filtered[index];
   activeArrivalTripId = a.trip_id;
   renderRouteAlertPanel(a.route_short_name);
@@ -1406,6 +1757,81 @@ function scheduleNextRefresh(stopId) {
 
 function startAutoRefresh(stopId) {
   scheduleNextRefresh(stopId);
+}
+
+// ── Timetable mode ────────────────────────────────────────────────────────────
+function _clearTimetableState() {
+  timetableMode = false;
+  timetableDate = null;
+  timetableTime = null;
+  document.getElementById('timetable-banner').style.display = 'none';
+  document.getElementById('timetable-picker').style.display = 'none';
+  const livBtn = document.getElementById('mode-live-btn');
+  const ttBtn = document.getElementById('mode-timetable-btn');
+  if (livBtn) livBtn.classList.add('active');
+  if (ttBtn) ttBtn.classList.remove('active');
+  const lbl = document.getElementById('arrivals-section-label');
+  if (lbl) { lbl.setAttribute('data-i18n', 'sectionNextBuses'); lbl.textContent = t('sectionNextBuses'); }
+}
+
+function switchToLiveMode() {
+  clearTimetable();
+}
+
+function switchToTimetableMode() {
+  document.getElementById('mode-live-btn').classList.remove('active');
+  document.getElementById('mode-timetable-btn').classList.add('active');
+  const lbl = document.getElementById('arrivals-section-label');
+  if (lbl) { lbl.setAttribute('data-i18n', 'timetableMode'); lbl.textContent = t('timetableMode'); }
+
+  const now = new Date();
+  const yr = now.getFullYear();
+  const mo = String(now.getMonth() + 1).padStart(2, '0');
+  const dy = String(now.getDate()).padStart(2, '0');
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const dateInput = document.getElementById('timetable-date-input');
+  const timeInput = document.getElementById('timetable-time-input');
+  if (!dateInput.value) dateInput.value = `${yr}-${mo}-${dy}`;
+  if (!timeInput.value) timeInput.value = `${hh}:${mm}`;
+  document.getElementById('timetable-picker').style.display = 'flex';
+  applyTimetable();
+}
+
+function applyTimetable() {
+  const dateVal = document.getElementById('timetable-date-input').value;
+  const timeVal = document.getElementById('timetable-time-input').value;
+  if (!dateVal) return;
+  timetableMode = true;
+  timetableDate = dateVal;
+  timetableTime = timeVal || '00:00';
+
+  // 自動更新を無効化
+  clearTimeout(refreshTimer);
+  autoRefreshEnabled = false;
+  document.getElementById('refresh-bar').classList.remove('visible');
+  document.getElementById('auto-refresh-toggle').classList.remove('active');
+
+  // バナー更新
+  const banner = document.getElementById('timetable-banner');
+  document.getElementById('timetable-banner-text').textContent = t('timetableBanner', dateVal, timetableTime);
+  banner.style.display = 'flex';
+
+  activeCardIndex = null;
+  activeArrivalTripId = null;
+  clearRoute();
+  if (currentStopId) fetchArrivals(currentStopId);
+}
+
+function clearTimetable() {
+  _clearTimetableState();
+  // 自動更新を再開
+  autoRefreshEnabled = true;
+  document.getElementById('auto-refresh-toggle').classList.add('active');
+  activeCardIndex = null;
+  activeArrivalTripId = null;
+  clearRoute();
+  if (currentStopId) fetchArrivals(currentStopId);
 }
 
 function toggleDemoMode() {
@@ -1748,6 +2174,11 @@ function resumeFromInactivity() {
   if (currentStopId) startAutoRefresh(currentStopId);
   resetInactivityTimer();
 }
+
+// ESC キーでモーダルを閉じる
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeSettings();
+});
 
 // ユーザー操作でタイマーをリセット
 ['click', 'keydown', 'touchstart', 'scroll'].forEach(evt => {

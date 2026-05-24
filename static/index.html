@@ -26,10 +26,7 @@
     <header>
       <div class="header-top-row">
         <div class="tag">South East Queensland</div>
-        <div class="header-btn-group">
-          <button id="theme-toggle" onclick="toggleTheme()" title="Switch theme">🌙</button>
-          <button id="lang-toggle" onclick="toggleLang()" title="Switch language">🌐 <span id="lang-label">日本語</span></button>
-        </div>
+        <button id="settings-btn" onclick="openSettings()" title="Settings">⚙</button>
       </div>
       <h1 onclick="handleTitleClick()" style="cursor:pointer;">SEQ Bus<br><span>Tracker</span></h1>
       <p class="subtitle" data-i18n="subtitle">Real-time arrivals powered by Translink GTFS-RT</p>
@@ -43,6 +40,7 @@
     <div class="search-tabs">
       <button class="search-tab active" id="tab-stop" onclick="switchTab('stop')" data-i18n="tabStop">Stop</button>
       <button class="search-tab" id="tab-route" onclick="switchTab('route')" data-i18n="tabRoute">Route</button>
+      <button class="search-tab" id="tab-map" onclick="switchTab('map')" data-i18n="tabMap">Map</button>
       <button id="alert-btn" onclick="openAlertPanel()" title="Service Alerts" style="display:none;">
         <span class="alert-bell-icon">🔔</span>
         <span id="alert-count-badge" class="alert-count-badge"></span>
@@ -91,15 +89,34 @@
       <span data-i18n="demoBanner">Demo mode — showing timetable from 8:00 AM today</span>
     </div>
 
+    <div id="timetable-banner" style="display:none;">
+      <span class="demo-banner-icon">📅</span>
+      <span id="timetable-banner-text"></span>
+      <button class="timetable-banner-clear" onclick="switchToLiveMode()">✕</button>
+    </div>
+
     <div id="main-panel">
+      <div id="map-tab-stops-panel" style="display:none;"></div>
       <div id="arrivals-col">
-        <div class="section-label" data-i18n="sectionNextBuses">Next buses</div>
+        <div class="section-label-row">
+          <span class="section-label" id="arrivals-section-label" data-i18n="sectionNextBuses">Next buses</span>
+          <div id="mode-switch" class="mode-switch" style="display:none;">
+            <button class="mode-btn active" id="mode-live-btn" onclick="switchToLiveMode()" data-i18n="liveMode">Live</button>
+            <button class="mode-btn" id="mode-timetable-btn" onclick="switchToTimetableMode()" data-i18n="timetableMode">Timetable</button>
+          </div>
+        </div>
+        <div id="timetable-picker" style="display:none;">
+          <input type="date" id="timetable-date-input" />
+          <input type="time" id="timetable-time-input" step="60" />
+          <button class="timetable-go-btn" onclick="applyTimetable()" data-i18n="timetableGo">Go</button>
+        </div>
         <div id="rt-unavailable-banner"></div>
         <div id="arrivals-filter-bar" style="display:none;"></div>
         <div id="arrivals-list"></div>
       </div>
       <div id="map-col">
         <div id="map-col-inner">
+          <div id="map-tab-header" style="display:none;"></div>
           <div class="section-label" data-i18n="sectionRouteMap">Route map</div>
           <div id="map-wrap">
             <div id="map"></div>
@@ -118,6 +135,48 @@
       <span class="live-dot">LIVE</span>
     </footer>
 
+  </div>
+
+  <!-- Stop timetable modal -->
+  <div id="stop-tt-overlay" onclick="closeStopTimetableModal()"></div>
+  <div id="stop-tt-modal">
+    <div class="stop-tt-header">
+      <div id="stop-tt-title" class="stop-tt-title"></div>
+      <button class="stop-tt-close" onclick="closeStopTimetableModal()">×</button>
+    </div>
+    <div class="stop-tt-date-row">
+      <input type="date" id="stop-tt-date" onchange="loadStopTimetableModal()" />
+    </div>
+    <div id="stop-tt-content"></div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-overlay" onclick="closeSettings()"></div>
+  <div id="settings-modal">
+    <div class="settings-header">
+      <span class="settings-title" data-i18n="settingsTitle">Settings</span>
+      <button class="settings-close" onclick="closeSettings()">×</button>
+    </div>
+    <div class="settings-body">
+      <div class="settings-row">
+        <span class="settings-row-label" data-i18n="settingsTheme">Theme</span>
+        <div class="settings-row-ctrl">
+          <span class="settings-row-val" id="settings-theme-val">Dark</span>
+          <label id="settings-theme-switch" class="switch-label" onclick="toggleTheme()">
+            <span class="switch-track"><span class="switch-knob"></span></span>
+          </label>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-row-label" data-i18n="settingsLang">Language</span>
+        <div class="settings-row-ctrl">
+          <span class="settings-row-val" id="settings-lang-val">English</span>
+          <label id="settings-lang-switch" class="switch-label" onclick="toggleLang()">
+            <span class="switch-track"><span class="switch-knob"></span></span>
+          </label>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Alert panel overlay -->

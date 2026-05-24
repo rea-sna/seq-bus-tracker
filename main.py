@@ -12,7 +12,7 @@ Run:
     uvicorn main:app --reload --port 8000
 """
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -49,6 +49,15 @@ DB_PATH  = os.path.join(GTFS_DIR, "gtfs.db")
 GTFS_URL = "https://gtfsrt.api.translink.com.au/GTFS/SEQ_GTFS.zip"
 
 
+def _download_gtfs_zip(zip_path: str):
+    """GTFSをダウンロードする"""
+    response = requests.get(GTFS_URL, stream=True, timeout=300)
+    response.raise_for_status()
+    with open(zip_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            f.write(chunk)
+
+
 def download_gtfs_if_needed():
     """gtfs/stops.txt がなければTranslinkからダウンロードして展開する"""
     if os.path.exists(os.path.join(GTFS_DIR, "stops.txt")):
@@ -61,11 +70,7 @@ def download_gtfs_if_needed():
     zip_path = os.path.join(GTFS_DIR, "gtfs.zip")
     print("Downloading GTFS from Translink...")
     try:
-        response = requests.get(GTFS_URL, stream=True, timeout=300)
-        response.raise_for_status()
-        with open(zip_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                f.write(chunk)
+        _download_gtfs_zip(zip_path)
         print("Extracting GTFS...")
         with zipfile.ZipFile(zip_path) as z:
             z.extractall(GTFS_DIR)
@@ -152,14 +157,19 @@ def build_gtfs_db():
         total_st = 0
         for chunk in pd.read_csv(
             f"{GTFS_DIR}/stop_times.txt",
-            dtype={"trip_id": str, "stop_id": str, "arrival_time": str, "stop_sequence": int},
-            usecols=["trip_id", "stop_id", "stop_sequence", "arrival_time"],
+            dtype={"trip_id": str, "stop_id": str, "arrival_time": str,
+                   "departure_time": str, "stop_sequence": int},
+            usecols=["trip_id", "stop_id", "stop_sequence", "arrival_time", "departure_time"],
             chunksize=200_000,
         ):
             chunk = chunk[chunk["trip_id"].isin(bus_trip_ids_set)].copy()
+            # arrival_time が空の場合（始発駅等）は departure_time で代替
+            mask = chunk["arrival_time"].isna() | (chunk["arrival_time"] == "")
+            chunk.loc[mask, "arrival_time"] = chunk.loc[mask, "departure_time"]
             chunk["arrival_secs"] = chunk["arrival_time"].apply(_arrival_secs)
             chunk = chunk.dropna(subset=["arrival_secs"])
             chunk["arrival_secs"] = chunk["arrival_secs"].astype(int)
+            chunk.drop(columns=["departure_time"], inplace=True)
             chunk.to_sql("stop_times", conn, if_exists="append", index=False)
             total_st += len(chunk)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_st_stop ON stop_times(stop_id)")
@@ -367,11 +377,7 @@ def _update_gtfs():
         # ダウンロード
         zip_path = os.path.join(GTFS_DIR, "gtfs.zip")
         print("  Downloading GTFS...")
-        response = requests.get(GTFS_URL, stream=True, timeout=300)
-        response.raise_for_status()
-        with open(zip_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                f.write(chunk)
+        _download_gtfs_zip(zip_path)
         print("  Extracting GTFS...")
         with zipfile.ZipFile(zip_path) as z:
             z.extractall(GTFS_DIR)
@@ -533,18 +539,46 @@ def _demo_now() -> float:
                              tzinfo=BRISBANE_TZ).timestamp()
 
 
+# ── Arrivals dedup helper ─────────────────────────────────────────────────────
+def _dedup_arrivals(arrivals: list) -> list:
+    """trip_id の重複を排除する（arrival_time ソート済みを前提に先着優先）"""
+    seen: set = set()
+    out = []
+    for a in arrivals:
+        if a["trip_id"] not in seen:
+            seen.add(a["trip_id"])
+            out.append(a)
+    return out
+
+
 # ── Static timetable fallback helper ─────────────────────────────────────────
-def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0):
+def _parse_timetable_ts(date_str: str, time_str: str):
+    """date='YYYY-MM-DD', time_str='HH:MM' → Brisbane Unix timestamp"""
+    import datetime
+    try:
+        target_date = datetime.date.fromisoformat(date_str) if date_str else datetime.datetime.now(BRISBANE_TZ).date()
+        parts = (time_str or "00:00").split(":")
+        h, m = int(parts[0]), int(parts[1])
+        return datetime.datetime(target_date.year, target_date.month, target_date.day,
+                                 h, m, 0, tzinfo=BRISBANE_TZ).timestamp()
+    except Exception:
+        return None
+
+
+def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0, limit: int = 15, base_date=None):
     """
     SQLiteから静的時刻を取得し、到着情報リストを返す。
-    day_offset=0 → 今日、day_offset=1 → 明日
+    day_offset=0 → base_date当日、day_offset=1 → base_date翌日
+    base_date が None の場合はブリスベン現在日を使用。
     """
     import datetime
     if not os.path.exists(DB_PATH):
         return []
 
     DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    target_date = datetime.datetime.now(BRISBANE_TZ).date() + datetime.timedelta(days=day_offset)
+    if base_date is None:
+        base_date = datetime.datetime.now(BRISBANE_TZ).date()
+    target_date = base_date + datetime.timedelta(days=day_offset)
     target_str  = target_date.strftime("%Y%m%d")
     day_name    = DAY_NAMES[target_date.weekday()]
     base_ts     = datetime.datetime(target_date.year, target_date.month, target_date.day,
@@ -601,11 +635,20 @@ def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0):
         """, stop_id_list).fetchall()
 
     arrivals = []
+    seen_trip_ids: set = set()
+    seen_slots: set = set()  # (stop_id, route_id, direction_id, arrival_secs) — 異なるservice_idの重複を除去
     for row in rows:
         arr_ts  = base_ts + row["arrival_secs"]
         if arr_ts <= now:
             continue
         trip_id = row["trip_id"]
+        if trip_id in seen_trip_ids:
+            continue
+        slot = (str(row["stop_id"]), str(row["route_id"]), str(row["direction_id"] or ""), row["arrival_secs"])
+        if slot in seen_slots:
+            continue
+        seen_trip_ids.add(trip_id)
+        seen_slots.add(slot)
         stop_id = str(row["stop_id"])
         is_last_stop = last_stop_by_trip.get(trip_id) == stop_id
         rc  = str(row["route_color"]      or "")
@@ -628,7 +671,7 @@ def get_static_arrivals(stop_id_list: list, now: float, day_offset: int = 0):
             "day_offset":       day_offset,
             "is_last_stop":     is_last_stop,
         })
-        if len(arrivals) >= 15:
+        if len(arrivals) >= limit:
             break
 
     return arrivals
@@ -873,7 +916,8 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
 
 @app.get("/api/terminal/{parent_id}/arrivals")
 @limiter.limit("30/minute")
-def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
+def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False,
+                          date: str = None, from_time: str = None):
     """ターミナルの全ホームをまとめて取得し、platform_codeを付与して返す"""
     if stops_df is None or not trips_dict:
         raise HTTPException(503, "GTFS data not loaded")
@@ -897,6 +941,26 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
     if not child_ids:
         raise HTTPException(404, "Terminal not found")
 
+    if (date or from_time) and not demo:
+        import datetime
+        ref_ts = _parse_timetable_ts(date or "", from_time or "")
+        if ref_ts is None:
+            raise HTTPException(400, "Invalid date or time format")
+        ref_date = datetime.date.fromisoformat(date) if date else datetime.datetime.now(BRISBANE_TZ).date()
+        arrivals: list = []
+        seen_trip_ids: set = set()
+        for offset in [0, 1]:
+            static = get_static_arrivals(list(child_ids), ref_ts, offset, limit=30, base_date=ref_date)
+            for a in static:
+                if a["trip_id"] not in seen_trip_ids:
+                    seen_trip_ids.add(a["trip_id"])
+                    a["platform_code"] = platform_map.get(a["stop_id"], "")
+                    arrivals.append(a)
+            if len(arrivals) >= 15:
+                break
+        arrivals.sort(key=lambda x: x["arrival_time"])
+        return {"arrivals": _dedup_arrivals(arrivals)[:30], "rt_available": False, "is_timetable": True}
+
     now = _demo_now() if demo else time.time()
     arrivals = []
 
@@ -909,7 +973,7 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
             if static:
                 arrivals = static
                 break
-        return {"arrivals": arrivals[:20], "rt_available": True}
+        return {"arrivals": _dedup_arrivals(arrivals)[:20], "rt_available": True}
 
     rt_available = True
     try:
@@ -924,7 +988,7 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
             if static:
                 break
         arrivals.sort(key=lambda x: x["arrival_time"])
-        return {"arrivals": arrivals[:20], "rt_available": False}
+        return {"arrivals": _dedup_arrivals(arrivals)[:20], "rt_available": False}
 
     for entity in feed.entity:
         if not entity.HasField("trip_update"):
@@ -979,9 +1043,10 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
                 "is_last_stop":     is_last_stop,
             })
 
+    arrivals = _dedup_arrivals(arrivals)
     arrivals.sort(key=lambda x: x["arrival_time"])
 
-    # RT便が20件未満なら静的データで補完
+    # RT便が20件未満なら静的データで補完（dedup後の件数で判定）
     if len(arrivals) < 20:
         rt_trip_ids = {a["trip_id"] for a in arrivals}
         for day_offset in [0, 1]:
@@ -999,7 +1064,8 @@ def get_terminal_arrivals(request: Request, parent_id: str, demo: bool = False):
 
 @app.get("/api/stops/multi/arrivals")
 @limiter.limit("30/minute")
-def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
+def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False,
+                            date: str = None, from_time: str = None):
     """同名バス停グループの全stop_idの到着情報を返す"""
     if stops_df is None or not trips_dict:
         raise HTTPException(503, "GTFS data not loaded")
@@ -1007,6 +1073,25 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
     stop_id_list = [s.strip() for s in ids.split(",") if s.strip()]
     if not stop_id_list:
         raise HTTPException(400, "No stop IDs provided")
+
+    if (date or from_time) and not demo:
+        import datetime
+        ref_ts = _parse_timetable_ts(date or "", from_time or "")
+        if ref_ts is None:
+            raise HTTPException(400, "Invalid date or time format")
+        ref_date = datetime.date.fromisoformat(date) if date else datetime.datetime.now(BRISBANE_TZ).date()
+        arrivals: list = []
+        seen_trip_ids: set = set()
+        for offset in [0, 1]:
+            static = get_static_arrivals(stop_id_list, ref_ts, offset, limit=30, base_date=ref_date)
+            for a in static:
+                if a["trip_id"] not in seen_trip_ids:
+                    seen_trip_ids.add(a["trip_id"])
+                    arrivals.append(a)
+            if len(arrivals) >= 15:
+                break
+        arrivals.sort(key=lambda x: x["arrival_time"])
+        return {"arrivals": _dedup_arrivals(arrivals)[:30], "stop_directions": {}, "rt_available": False, "is_timetable": True}
 
     now = _demo_now() if demo else time.time()
     arrivals = []
@@ -1035,7 +1120,7 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
                         stop_directions[sid] = str(row["direction_id"] or "")
                 except Exception:
                     pass
-        return {"arrivals": arrivals[:20], "stop_directions": stop_directions, "rt_available": True}
+        return {"arrivals": _dedup_arrivals(arrivals)[:20], "stop_directions": stop_directions, "rt_available": True}
 
     rt_available = True
     try:
@@ -1048,14 +1133,30 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
                 arrivals = static
                 break
         arrivals.sort(key=lambda x: x["arrival_time"])
-        return {"arrivals": arrivals[:20], "stop_directions": {}, "rt_available": False}
+        return {"arrivals": _dedup_arrivals(arrivals)[:20], "stop_directions": {}, "rt_available": False}
+
+    # RTフィードで確認済みのtrip_id（CANCELED/SKIPPED含む）を追跡し、
+    # 静的補完でゾンビ便が復活しないようにする
+    rt_seen_trip_ids: set = set()
 
     for entity in feed.entity:
         if not entity.HasField("trip_update"):
             continue
+
+        # CANCELEDトリップはスキップ（静的補完からも除外）
+        if entity.trip_update.trip.schedule_relationship == 5:  # CANCELED
+            rt_seen_trip_ids.add(entity.trip_update.trip.trip_id)
+            continue
+
         for stu in entity.trip_update.stop_time_update:
             if str(stu.stop_id) not in child_ids:
                 continue
+
+            # SKIPPEDバス停はスキップ（静的補完からも除外）
+            if stu.schedule_relationship == 1:  # SKIPPED
+                rt_seen_trip_ids.add(entity.trip_update.trip.trip_id)
+                continue
+
             delay = 0
             if stu.HasField("arrival") and stu.arrival.time:
                 arrival_time = stu.arrival.time
@@ -1071,6 +1172,7 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
             trip_id = entity.trip_update.trip.trip_id
             if trip_id not in trips_dict:
                 continue
+            rt_seen_trip_ids.add(trip_id)
             is_last_stop = last_stop_by_trip.get(trip_id) == str(stu.stop_id)
             trip = trips_dict[trip_id]
 
@@ -1103,11 +1205,12 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
                 "is_last_stop":     is_last_stop,
             })
 
+    arrivals = _dedup_arrivals(arrivals)
     arrivals.sort(key=lambda x: x["arrival_time"])
 
-    # RT便が20件未満なら静的データで補完
+    # RT便が20件未満なら静的データで補完（CANCELED/SKIPPEDのtrip_idも除外）
     if len(arrivals) < 20:
-        rt_trip_ids = {a["trip_id"] for a in arrivals}
+        rt_trip_ids = {a["trip_id"] for a in arrivals} | rt_seen_trip_ids
         for day_offset in [0, 1]:
             static = get_static_arrivals(stop_id_list, now, day_offset)
             for a in static:
@@ -1139,10 +1242,30 @@ def get_multi_stop_arrivals(request: Request, ids: str, demo: bool = False):
 
 @app.get("/api/stops/{stop_id}/arrivals")
 @limiter.limit("30/minute")
-def get_arrivals(request: Request, stop_id: str, demo: bool = False):
+def get_arrivals(request: Request, stop_id: str, demo: bool = False,
+                 date: str = None, from_time: str = None):
     """指定バス停の次のバス一覧（リアルタイム）"""
     if not trips_dict:
         raise HTTPException(503, "GTFS data not loaded")
+
+    if (date or from_time) and not demo:
+        import datetime
+        ref_ts = _parse_timetable_ts(date or "", from_time or "")
+        if ref_ts is None:
+            raise HTTPException(400, "Invalid date or time format")
+        ref_date = datetime.date.fromisoformat(date) if date else datetime.datetime.now(BRISBANE_TZ).date()
+        arrivals: list = []
+        seen_trip_ids: set = set()
+        for offset in [0, 1]:
+            static = get_static_arrivals([stop_id], ref_ts, offset, limit=30, base_date=ref_date)
+            for a in static:
+                if a["trip_id"] not in seen_trip_ids:
+                    seen_trip_ids.add(a["trip_id"])
+                    arrivals.append(a)
+            if len(arrivals) >= 15:
+                break
+        arrivals.sort(key=lambda x: x["arrival_time"])
+        return {"arrivals": arrivals[:30], "rt_available": False, "is_timetable": True}
 
     now = _demo_now() if demo else time.time()
     arrivals = []
@@ -1154,7 +1277,7 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
                 for a in arrivals:
                     a["is_demo"] = True
                 break
-        return {"arrivals": arrivals[:15], "rt_available": True}
+        return {"arrivals": _dedup_arrivals(arrivals)[:15], "rt_available": True}
 
     rt_available = True
     try:
@@ -1166,14 +1289,28 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
             if arrivals:
                 break
         arrivals.sort(key=lambda x: x["arrival_time"])
-        return {"arrivals": arrivals[:15], "rt_available": False}
+        return {"arrivals": _dedup_arrivals(arrivals)[:15], "rt_available": False}
+
+    # RTフィードで確認済みのtrip_id（CANCELED/SKIPPED含む）を追跡し、
+    # 静的補完でゾンビ便が復活しないようにする
+    rt_seen_trip_ids: set = set()
 
     for entity in feed.entity:
         if not entity.HasField("trip_update"):
             continue
 
+        # CANCELEDトリップはスキップ（静的補完からも除外）
+        if entity.trip_update.trip.schedule_relationship == 5:  # CANCELED
+            rt_seen_trip_ids.add(entity.trip_update.trip.trip_id)
+            continue
+
         for stu in entity.trip_update.stop_time_update:
             if str(stu.stop_id) != str(stop_id):
+                continue
+
+            # SKIPPEDバス停はスキップ（静的補完からも除外）
+            if stu.schedule_relationship == 1:  # SKIPPED
+                rt_seen_trip_ids.add(entity.trip_update.trip.trip_id)
                 continue
 
             delay = 0
@@ -1192,6 +1329,7 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
             trip_id = entity.trip_update.trip.trip_id
             if trip_id not in trips_dict:
                 continue
+            rt_seen_trip_ids.add(trip_id)
             is_last_stop = last_stop_by_trip.get(trip_id) == str(stop_id)
             trip = trips_dict[trip_id]
 
@@ -1224,11 +1362,12 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
                 "is_last_stop":     is_last_stop,
             })
 
+    arrivals = _dedup_arrivals(arrivals)
     arrivals.sort(key=lambda x: x["arrival_time"])
 
-    # RT便が15件未満なら静的データで補完
+    # RT便が15件未満なら静的データで補完（CANCELED/SKIPPEDのtrip_idも除外）
     if len(arrivals) < 15:
-        rt_trip_ids = {a["trip_id"] for a in arrivals}
+        rt_trip_ids = {a["trip_id"] for a in arrivals} | rt_seen_trip_ids
         for day_offset in [0, 1]:
             static = get_static_arrivals([stop_id], now, day_offset)
             for a in static:
@@ -1239,6 +1378,16 @@ def get_arrivals(request: Request, stop_id: str, demo: bool = False):
         arrivals.sort(key=lambda x: x["arrival_time"])
 
     return {"arrivals": arrivals[:15], "rt_available": rt_available}
+
+
+@app.post("/api/admin/update-gtfs")
+def admin_update_gtfs(background_tasks: BackgroundTasks):
+    """GTFSデータを手動で更新する（ローカル開発用）"""
+    if not _gtfs_update_lock.acquire(blocking=False):
+        return {"status": "already_running"}
+    _gtfs_update_lock.release()
+    background_tasks.add_task(_update_gtfs)
+    return {"status": "started"}
 
 
 @app.get("/api/stops/{stop_id}")
@@ -1270,6 +1419,90 @@ def get_stop(request: Request, stop_id: str):
         "routes":      routes,
         "is_terminal": is_terminal,
     }
+
+
+@app.get("/api/stops/{stop_id}/timetable")
+@limiter.limit("30/minute")
+def get_stop_timetable(request: Request, stop_id: str, route_id: str, date: str = None):
+    """指定バス停×路線の1日分の時刻表を返す"""
+    import datetime
+    if not os.path.exists(DB_PATH):
+        raise HTTPException(503, "GTFS data not loaded")
+
+    DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    if date:
+        try:
+            target_date = datetime.datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            target_date = datetime.datetime.now(BRISBANE_TZ).date()
+    else:
+        target_date = datetime.datetime.now(BRISBANE_TZ).date()
+
+    target_str = target_date.strftime("%Y%m%d")
+    day_name = DAY_NAMES[target_date.weekday()]
+
+    conn = get_db()
+
+    active_ids: set = set()
+    try:
+        for r in conn.execute(
+            f"SELECT service_id FROM calendar WHERE start_date<=? AND end_date>=? AND {day_name}='1'",
+            (target_str, target_str)
+        ).fetchall():
+            active_ids.add(r[0])
+        for r in conn.execute(
+            "SELECT service_id FROM calendar_dates WHERE date=? AND exception_type='1'",
+            (target_str,)
+        ).fetchall():
+            active_ids.add(r[0])
+        for r in conn.execute(
+            "SELECT service_id FROM calendar_dates WHERE date=? AND exception_type='2'",
+            (target_str,)
+        ).fetchall():
+            active_ids.discard(r[0])
+    except Exception:
+        pass
+
+    departures = []
+    if active_ids:
+        svc_ph = ",".join("?" * len(active_ids))
+        rows = conn.execute(f"""
+            SELECT st.arrival_time, st.arrival_secs,
+                   t.trip_id, t.trip_headsign, t.direction_id
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            WHERE st.stop_id = ?
+              AND t.route_id = ?
+              AND t.service_id IN ({svc_ph})
+            ORDER BY st.arrival_secs
+        """, [stop_id, route_id, *active_ids]).fetchall()
+    else:
+        # calendarテーブルに該当日がない場合（GTFS期限切れ等）はサービスフィルタなしで全便を返す
+        rows = conn.execute("""
+            SELECT st.arrival_time, st.arrival_secs,
+                   t.trip_id, t.trip_headsign, t.direction_id
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            WHERE st.stop_id = ?
+              AND t.route_id = ?
+            ORDER BY st.arrival_secs
+        """, [stop_id, route_id]).fetchall()
+
+    seen_trip_ids: set = set()
+    for row in rows:
+        trip_id = row["trip_id"]
+        if trip_id in seen_trip_ids:
+            continue
+        seen_trip_ids.add(trip_id)
+        parts = (row["arrival_time"] or "00:00:00").split(":")
+        h = int(parts[0]) % 24
+        display_time = f"{h:02d}:{parts[1]}"
+        departures.append({
+            "time": display_time,
+            "headsign": str(row["trip_headsign"] or ""),
+        })
+
+    return {"date": target_str, "departures": departures, "is_fallback": not bool(active_ids)}
 
 
 @app.get("/api/trips/{trip_id:path}/stops")
@@ -1542,6 +1775,7 @@ def get_route_stops(request: Request, route_id: str, direction: int = 0):
 
     best_trip = next((r for r in dir_trips if r["trip_id"] == best_trip_id), None)
     headsign = str(best_trip["trip_headsign"] or "") if best_trip else ""
+    shape_id = (trips_dict.get(best_trip_id) or {}).get("shape_id") or ""
 
     direction_headsigns: dict = {}
     for d in ["0", "1"]:
@@ -1551,6 +1785,7 @@ def get_route_stops(request: Request, route_id: str, direction: int = 0):
 
     return {
         "headsign":            headsign,
+        "shape_id":            shape_id,
         "direction_headsigns": direction_headsigns,
         "stops": [
             {
