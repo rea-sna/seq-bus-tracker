@@ -16,7 +16,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from routers.deps import limiter
-from routers import stops, arrivals, routes, vehicles, alerts, admin
+from routers import stops, arrivals, routes, vehicles, alerts, admin, trips
 from core.loader import download_gtfs_if_needed, build_gtfs_db, _update_gtfs
 from core.state import _load_gtfs_to_memory
 
@@ -35,6 +35,7 @@ app.add_middleware(
 app.include_router(stops.router)
 app.include_router(arrivals.router)
 app.include_router(routes.router)
+app.include_router(trips.router)
 app.include_router(vehicles.router)
 app.include_router(alerts.router)
 app.include_router(admin.router)
