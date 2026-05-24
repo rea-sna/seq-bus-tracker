@@ -10,7 +10,7 @@ from core.arrivals import (
     _demo_now, _dedup_arrivals, _parse_timetable_ts,
     get_static_arrivals, _route_info,
 )
-from core.config import BRISBANE_TZ
+from core.config import BRISBANE_TZ, DB_PATH
 from core.feeds import get_feed
 from routers.deps import limiter
 
