@@ -7,8 +7,9 @@ Run:
 
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -30,6 +31,14 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+
+_X_ROBOTS = "noindex, nofollow, noarchive, nosnippet, noimageindex"
+
+@app.middleware("http")
+async def add_robots_header(request: Request, call_next) -> Response:
+    response = await call_next(request)
+    response.headers["X-Robots-Tag"] = _X_ROBOTS
+    return response
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(stops.router)
