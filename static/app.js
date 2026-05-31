@@ -26,10 +26,12 @@ let currentIsTerminal = false;
 let currentStopLat = null;
 let currentStopLon = null;
 let refreshTimer = null;
+let _fetchController = null;
 let activeCardIndex = null;
 let activeArrivalTripId = null;
 let showAllArrivals = false;
 let activeArrivalFilter = { platform: null, direction: null, route: null };
+let showTerminates = false;
 let currentIsNameGrouped = false;
 let currentGroupedStopIds = [];
 const nameGroupedStopMap = {};  // stop_id -> stop_ids[] for name-grouped stops
@@ -81,6 +83,10 @@ const STRINGS = {
     subtitle: 'Real-time arrivals powered by Translink GTFS-RT',
     alertPanelTitle: 'Service Alerts',
     alertBtnLabel: 'Service Alerts',
+    alertSortDefault: 'Default',
+    alertSortRoute: 'Route',
+    alertSortCause: 'Cause',
+    alertSortEffect: 'Effect',
     settingsTitle: 'Settings',
     settingsTheme: 'Theme',
     settingsThemeDark: 'Dark',
@@ -112,6 +118,7 @@ const STRINGS = {
     routeDir1: 'Inbound',
     rtUnavailable: 'Real-time data unavailable — showing scheduled times only.',
     lastStop: 'Terminates here',
+    filterHideTerminates: 'Show terminus',
     timetableGo: 'Go',
     timetableBanner: (date, time) => `Timetable from ${date} ${time}`,
     liveMode: 'Live',
@@ -163,6 +170,10 @@ const STRINGS = {
     sectionRouteMap: 'ルートマップ',
     subtitle: 'Translinkリアルタイム情報',
     alertPanelTitle: 'サービス情報',
+    alertSortDefault: 'デフォルト',
+    alertSortRoute: '路線',
+    alertSortCause: '原因',
+    alertSortEffect: '影響',
     alertBtnLabel: 'サービス情報',
     settingsTitle: '設定',
     settingsTheme: 'テーマ',
@@ -195,6 +206,7 @@ const STRINGS = {
     routeDir1: '上り',
     rtUnavailable: 'リアルタイム情報を取得できません。時刻表の予定時刻を表示しています。',
     lastStop: '当駅止まり',
+    filterHideTerminates: '終着を表示',
     timetableGo: '表示',
     timetableBanner: (date, time) => `時刻表: ${date} ${time}～`,
     liveMode: 'リアルタイム',
@@ -1357,6 +1369,7 @@ function selectStop(stopId, stopName, lat, lon, isTerminal = false, routes = [])
   activeCardIndex = null;
   activeArrivalTripId = null;
   activeArrivalFilter = { platform: null, direction: null, route: null };
+  showTerminates = false;
   showAllArrivals = false;
   lastArrivals = [];
 
@@ -1402,7 +1415,6 @@ function selectStop(stopId, stopName, lat, lon, isTerminal = false, routes = [])
   clearRoute();
   clearError();
   fetchArrivals(stopId);
-  startAutoRefresh(stopId);
   updateFavBtn();
   renderFavorites(); // アクティブ状態を更新
 }
@@ -1419,6 +1431,9 @@ function getFilteredArrivals() {
   if (activeArrivalFilter.route !== null) {
     arr = arr.filter(a => a.route_short_name === activeArrivalFilter.route);
   }
+  if (!showTerminates) {
+    arr = arr.filter(a => !a.is_last_stop);
+  }
   return arr;
 }
 
@@ -1433,7 +1448,7 @@ function renderFilterBar() {
       html += `<div class="arrivals-filter-group"><span class="arrivals-filter-label">${t('filterPlatform')}</span>`;
       platforms.forEach(p => {
         const active = activeArrivalFilter.platform === p ? ' active' : '';
-        html += `<button class="arrivals-filter-chip${active}" onclick="setArrivalFilter('platform','${escAttr(p)}')">${escHtml(p)}</button>`;
+        html += `<button class="arrivals-filter-chip arrivals-filter-chip--platform${active}" onclick="setArrivalFilter('platform','${escAttr(p)}')">${escHtml(p)}</button>`;
       });
       html += '</div>';
     }
@@ -1478,8 +1493,31 @@ function renderFilterBar() {
     html += '</div>';
   }
 
+  // Terminates toggle (show only when there are is_last_stop arrivals)
+  const hasTerminates = lastArrivals.some(a => a.is_last_stop);
+  if (hasTerminates) {
+    const activeClass = showTerminates ? ' active' : '';
+    html += `<div class="arrivals-filter-group arrivals-filter-terminates">
+      <label class="switch-label${activeClass}" onclick="toggleHideTerminates()">
+        <span class="switch-track"><span class="switch-knob"></span></span>
+      </label>
+      <span class="arrivals-filter-terminates-label">${t('filterHideTerminates')}</span>
+    </div>`;
+  }
+
   bar.innerHTML = html;
   bar.style.display = html ? 'block' : 'none';
+}
+
+function toggleHideTerminates() {
+  showTerminates = !showTerminates;
+  activeCardIndex = null;
+  activeArrivalTripId = null;
+  clearRoute();
+  renderFilterBar();
+  const filtered = getFilteredArrivals();
+  renderArrivals(filtered, showAllArrivals);
+  if (filtered.length > 0) onCardClick(0);
 }
 
 function setArrivalFilter(type, value) {
@@ -1495,6 +1533,11 @@ function setArrivalFilter(type, value) {
 
 // ── Arrivals ─────────────────────────────────────────────────────────────────
 async function fetchArrivals(stopId) {
+  // 前のリクエストをキャンセルしてレースコンディションを防ぐ
+  if (_fetchController) _fetchController.abort();
+  _fetchController = new AbortController();
+  const { signal } = _fetchController;
+
   const list = document.getElementById('arrivals-list');
   const wasShowingTomorrow = lastArrivals.length > 0 && lastArrivals.some(a => a.day_offset === 1);
   const isRefresh = lastArrivals.length > 0;
@@ -1513,7 +1556,7 @@ async function fetchArrivals(stopId) {
       : currentIsNameGrouped
         ? `${API}/api/stops/multi/arrivals?ids=${currentGroupedStopIds.join(',')}${demoMode ? '&demo=true' : ''}${timetableMode && timetableDate ? `&date=${encodeURIComponent(timetableDate)}&from_time=${encodeURIComponent(timetableTime || '00:00')}` : ''}`
         : `${API}/api/stops/${stopId}/arrivals${dp}${timetableParams}`;
-    const res = await fetch(endpoint);
+    const res = await fetch(endpoint, { signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     lastArrivals = data.arrivals || [];
@@ -1579,11 +1622,16 @@ async function fetchArrivals(stopId) {
       // バス停選択直後（activeCardIndex が null）は最初の便を自動選択
       onCardClick(0);
     }
-  } catch {
+  } catch (err) {
+    if (err.name === 'AbortError') return; // 新しいリクエストによりキャンセルされた場合は無視
     list.classList.remove('refreshing');
     setRtUnavailableBanner(false);
     showError(t('fetchError'));
     if (!isRefresh) list.innerHTML = '';
+    // 失敗時も自動更新が有効なら30秒後にリトライ
+    if (autoRefreshEnabled && currentStopId) {
+      refreshTimer = setTimeout(() => { if (currentStopId) fetchArrivals(currentStopId); }, 30000);
+    }
   }
 }
 
@@ -2019,6 +2067,7 @@ document.addEventListener('click', e => {
 // ── Service Alerts ────────────────────────────────────────────────────────────
 let alertsCache = [];
 let alertFilterTag = null; // 選択中のルートタグフィルタ（null = 全表示）
+let alertSortKey = null;   // null | 'route' | 'cause' | 'effect'
 
 async function fetchAlerts() {
   try {
@@ -2043,6 +2092,7 @@ async function fetchAlerts() {
 
 function openAlertPanel() {
   alertFilterTag = null;
+  alertSortKey = null;
   renderAlertPanel();
   document.getElementById('alert-panel').classList.add('open');
   document.getElementById('alert-overlay').classList.add('open');
@@ -2058,12 +2108,52 @@ function setAlertFilter(tag) {
   renderAlertPanel();
 }
 
+function _routeSortKey(name) {
+  const n = parseInt(name, 10);
+  return isNaN(n) ? name : String(n).padStart(6, '0');
+}
+
+function getSortedAlerts(alerts) {
+  if (!alertSortKey) return alerts;
+  return [...alerts].sort((a, b) => {
+    if (alertSortKey === 'route') {
+      const ra = a.route_short_names.map(_routeSortKey).sort()[0] || 'zzz';
+      const rb = b.route_short_names.map(_routeSortKey).sort()[0] || 'zzz';
+      return ra.localeCompare(rb);
+    }
+    if (alertSortKey === 'cause') {
+      return (a.cause || '').localeCompare(b.cause || '');
+    }
+    if (alertSortKey === 'effect') {
+      return (a.effect || '').localeCompare(b.effect || '');
+    }
+    return 0;
+  });
+}
+
+function setAlertSort(key) {
+  alertSortKey = alertSortKey === key ? null : key;
+  renderAlertPanel();
+}
+
 function renderAlertPanel() {
   const list = document.getElementById('alert-panel-list');
   if (!alertsCache.length) {
     list.innerHTML = `<div class="alert-empty">${t('alertNone')}</div>`;
+    document.getElementById('alert-sort-bar').innerHTML = '';
     return;
   }
+
+  // ソートバーをヘッダーに描画
+  const sortKeys = ['route', 'cause', 'effect'];
+  const sortLabels = { route: t('alertSortRoute'), cause: t('alertSortCause'), effect: t('alertSortEffect') };
+  document.getElementById('alert-sort-bar').innerHTML = `
+    <div class="alert-sort-bar">
+      <span class="alert-sort-label">Sort:</span>
+      ${sortKeys.map(k => `
+        <button class="alert-sort-btn${alertSortKey === k ? ' active' : ''}" onclick="setAlertSort('${k}')">${sortLabels[k]}</button>
+      `).join('')}
+    </div>`;
 
   // 全ルートタグを収集してフィルタバーを構築
   const allTags = [...new Set(alertsCache.flatMap(a => a.route_short_names))].sort();
@@ -2084,10 +2174,10 @@ function renderAlertPanel() {
       ` : ''}
     </div>` : '';
 
-  // フィルタ適用
-  const filtered = alertFilterTag
+  // フィルタ適用 → ソート適用
+  const filtered = getSortedAlerts(alertFilterTag
     ? alertsCache.filter(a => a.route_short_names.includes(alertFilterTag))
-    : alertsCache;
+    : alertsCache);
 
   const countLabel = alertFilterTag
     ? `<div class="alert-filter-count">${filtered.length} alert${filtered.length !== 1 ? 's' : ''} for ${escHtml(alertFilterTag)}</div>`

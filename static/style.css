@@ -2141,14 +2141,59 @@ footer {
 
 .alert-panel-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 20px 20px 16px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px 20px 14px;
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
   background: var(--surface);
   z-index: 1;
+}
+
+.alert-panel-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.alert-sort-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.alert-sort-label {
+  font-family: 'Space Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.alert-sort-btn {
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.alert-sort-btn:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.alert-sort-btn.active {
+  background: var(--warn);
+  color: #000;
+  border-color: var(--warn);
 }
 
 .alert-panel-title {
@@ -2625,6 +2670,19 @@ footer {
   color: #fff;
 }
 
+.arrivals-filter-chip--platform {
+  font-size: 12px;
+  padding: 5px 14px;
+  border-radius: 6px;
+  border-color: var(--muted);
+  color: var(--text);
+  letter-spacing: 0.03em;
+}
+
+.arrivals-filter-chip--platform.active {
+  box-shadow: 0 0 0 2px var(--accent2);
+}
+
 .arrivals-filter-chip.ended {
   opacity: 0.5;
   border-style: dashed;
@@ -2640,6 +2698,22 @@ footer {
   background: rgba(255, 255, 255, 0.15);
   vertical-align: middle;
   letter-spacing: 0;
+}
+
+.arrivals-filter-terminates {
+  margin-left: auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.arrivals-filter-terminates-label {
+  font-family: 'Space Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 /* ── Stop timetable modal ── */
