@@ -11,6 +11,7 @@ from core.arrivals import (
     get_static_arrivals, _route_info,
 )
 from core.config import BRISBANE_TZ, DB_PATH
+from core.db import get_db
 from core.feeds import get_feed
 from routers.deps import limiter
 

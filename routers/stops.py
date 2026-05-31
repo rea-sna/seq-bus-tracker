@@ -41,7 +41,7 @@ def search_stops(request: Request, q: str = ""):
     seen_parents = set()
     individual_by_name = {}
 
-    for _, row in matched.iterrows():
+    for row in matched.to_dict('records'):
         parent = row.get("parent_station", "") if has_parent else ""
         loc    = row.get("location_type",  "") if has_loc_type else ""
 
@@ -65,7 +65,7 @@ def search_stops(request: Request, q: str = ""):
                 station_lon  = float(row["stop_lon"])
 
             platforms = []
-            for _, sib in siblings.iterrows():
+            for sib in siblings.to_dict('records'):
                 if sib.get("location_type", "") == "1":
                     continue
                 pf = sib.get("platform_code", "") if has_platform else ""
@@ -86,7 +86,7 @@ def search_stops(request: Request, q: str = ""):
                 "is_name_grouped": False,
                 "stop_ids":        [],
                 "platforms":       platforms,
-                "routes":          state._merge_routes([sib["stop_id"] for _, sib in siblings.iterrows()]),
+                "routes":          state._merge_routes(siblings["stop_id"].tolist()),
             })
         else:
             name = row["stop_name"]
@@ -159,7 +159,7 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
     seen_parents = set()
     individual_by_name = {}
 
-    for _, row in candidate_df.iterrows():
+    for row in candidate_df.to_dict('records'):
         parent = row.get("parent_station", "") if has_parent else ""
         if parent:
             if parent in seen_parents:
@@ -179,7 +179,7 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
 
             siblings = df[df["parent_station"] == parent]
             platforms = []
-            for _, sib in siblings.iterrows():
+            for sib in siblings.to_dict('records'):
                 if str(sib.get("location_type", "")) == "1":
                     continue
                 pf = sib.get("platform_code", "") if has_platform else ""
@@ -199,7 +199,7 @@ def get_nearby_stops(request: Request, lat: float, lon: float, radius: int = 500
                 "is_name_grouped": False,
                 "stop_ids":        [],
                 "platforms":       platforms,
-                "routes":          state._merge_routes([str(sib["stop_id"]) for _, sib in siblings.iterrows()]),
+                "routes":          state._merge_routes(siblings["stop_id"].astype(str).tolist()),
                 "distance_m":      round(dist),
             })
         else:

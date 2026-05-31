@@ -363,7 +363,11 @@ function calcStopsAway(pos) {
 
   const diff = targetIdx - vehicleIdx;
   if (diff < 0) return { passed: true };
-  if (diff === 0) return { atStop: true };
+  if (diff === 0) {
+    // IN_TRANSIT_TO(2): current_stop_id は向かっている先のバス停なので、まだ到着していない
+    if (pos.current_status === 2) return { approaching: true };
+    return { atStop: true };
+  }
   const vehicleStop = stops[vehicleIdx];
   const intermediateStops = stops.slice(vehicleIdx + 1, targetIdx + 1);
   return { stopsAway: diff, vehicleStop, intermediateStops };
@@ -390,6 +394,8 @@ function updateVehiclePanel(pos, lineColor, vehicleId = null) {
   if (proximity) {
     if (proximity.passed) {
       proximityStr = `<span class="vehicle-proximity-badge">${t('vehiclePassed')}</span>`;
+    } else if (proximity.approaching) {
+      proximityStr = `<span class="vehicle-proximity-badge vehicle-proximity-away" style="color:${color};border-color:${color}">${t('vehicleIncomingAt')}</span>`;
     } else if (proximity.atStop) {
       proximityStr = `<span class="vehicle-proximity-badge vehicle-proximity-at" style="color:${color};border-color:${color}">${t('vehicleAtStop')}</span>`;
     } else {
@@ -460,7 +466,7 @@ async function updateVehicleMarker(tripId, lineColor, vehicleId = null) {
     // 3つ前のバス停に到達したら（停車中も含む）、バスの現在位置と選択中のバス停が収まるよう拡大（一度だけ）
     const proximity = calcStopsAway(pos);
     if (proximity && !proximity.passed && !vehicleZoomedAt2Stops &&
-        (proximity.atStop || proximity.stopsAway <= 3) &&
+        (proximity.atStop || proximity.approaching || proximity.stopsAway <= 3) &&
         currentStopLat != null && currentStopLon != null) {
       vehicleZoomedAt2Stops = true;
       map.fitBounds(

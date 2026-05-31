@@ -61,6 +61,7 @@ async function findNearbyStops() {
 const searchInput = document.getElementById('search-input');
 const stopList = document.getElementById('stop-list');
 let searchTimer = null;
+let _searchController = null;
 
 searchInput.addEventListener('input', () => {
   clearTimeout(searchTimer);
@@ -120,10 +121,15 @@ function switchTab(tab) {
 
 // ── Route search ──────────────────────────────────────────────────────────────
 async function fetchRoutes(q) {
+  if (_searchController) _searchController.abort();
+  _searchController = new AbortController();
   try {
-    const res = await fetch(`${API}/api/routes/search?q=${encodeURIComponent(q)}`);
+    const res = await fetch(`${API}/api/routes/search?q=${encodeURIComponent(q)}`, { signal: _searchController.signal });
     renderRouteList(await res.json());
-  } catch { showError(t('serverError')); }
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    showError(t('serverError'));
+  }
 }
 
 function renderRouteList(routes) {
@@ -447,10 +453,15 @@ function closeStopTimetableModal() {
 }
 
 async function fetchStops(q) {
+  if (_searchController) _searchController.abort();
+  _searchController = new AbortController();
   try {
-    const res = await fetch(`${API}/api/stops/search?q=${encodeURIComponent(q)}`);
+    const res = await fetch(`${API}/api/stops/search?q=${encodeURIComponent(q)}`, { signal: _searchController.signal });
     renderStopList(await res.json());
-  } catch { showError(t('serverError')); }
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    showError(t('serverError'));
+  }
 }
 
 function renderStopList(stops, showDistance = false) {

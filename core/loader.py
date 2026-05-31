@@ -94,7 +94,7 @@ def build_gtfs_db():
             chunk.drop(columns=["departure_time"], inplace=True)
             chunk.to_sql("stop_times", conn, if_exists="append", index=False)
             total_st += len(chunk)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_st_stop ON stop_times(stop_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_st_stop_secs ON stop_times(stop_id, arrival_secs)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_st_trip ON stop_times(trip_id)")
         print(f"  {total_st} stop_times rows imported")
 
@@ -163,10 +163,12 @@ def build_gtfs_db():
 
 def _update_gtfs():
     """GTFSスタティックデータを再ダウンロードしてDBとメモリを更新する（週1回実行）"""
+    from core import state
     from core.state import _load_gtfs_to_memory
     if not _gtfs_update_lock.acquire(blocking=False):
         print("⚠️  GTFS update already in progress, skipping")
         return
+    state.gtfs_status = "updating"
     try:
         print("🔄 GTFS weekly update started...")
         for fname in ["stops.txt", "routes.txt", "trips.txt", "stop_times.txt",
@@ -191,5 +193,7 @@ def _update_gtfs():
 
     except Exception as e:
         print(f"❌ GTFS weekly update failed: {e}")
+        if state.gtfs_status == "updating":
+            state.gtfs_status = "ready" if state.stops_df is not None else "loading"
     finally:
         _gtfs_update_lock.release()

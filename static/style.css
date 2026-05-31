@@ -2015,6 +2015,78 @@ footer {
   line-height: 1.4;
 }
 
+/* ── Server unavailable overlay ── */
+#server-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+#server-overlay.visible {
+  display: flex;
+}
+#server-overlay-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 36px 32px 28px;
+  width: min(360px, 90vw);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+}
+#server-overlay-icon {
+  font-size: 36px;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+#server-overlay-title {
+  font-family: 'Space Mono', monospace;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+#server-overlay-msg {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+  max-width: 280px;
+}
+#server-overlay-retry {
+  margin-top: 8px;
+  padding: 9px 24px;
+  background: var(--accent2);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-family: 'Space Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+#server-overlay-retry:hover { opacity: 0.85; }
+
+.server-overlay-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent2);
+  border-radius: 50%;
+  animation: server-spin 0.9s linear infinite;
+}
+@keyframes server-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── Settings modal ── */
 #settings-overlay {
   display: none;

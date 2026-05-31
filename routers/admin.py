@@ -17,6 +17,12 @@ def admin_update_gtfs(background_tasks: BackgroundTasks):
     return {"status": "started"}
 
 
+@router.get("/api/status")
+def get_status():
+    from core import state
+    return {"status": state.gtfs_status}
+
+
 @router.get("/api/config")
 def get_config():
     return {

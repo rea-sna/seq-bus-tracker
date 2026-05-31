@@ -282,7 +282,8 @@ async function fetchArrivals(stopId) {
       onCardClick(0);
     }
   } catch (err) {
-    if (err.name === 'AbortError') return; // 新しいリクエストによりキャンセルされた場合は無視
+    if (err.name === 'AbortError') return;
+    if (err.isServerUnavailable) return; // overlay が回復を管理するためリトライ抑制
     list.classList.remove('refreshing');
     setRtUnavailableBanner(false);
     showError(t('fetchError'));

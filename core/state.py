@@ -17,11 +17,12 @@ bus_routes_df = None
 trips_dict: dict = {}
 stop_routes_dict: dict = {}
 last_stop_by_trip: dict = {}
+gtfs_status: str = "loading"
 
 
 def _load_gtfs_to_memory():
     """DBからグローバル変数へGTFSデータをロードする（起動時・週次更新時に呼び出す）"""
-    global stops_df, bus_routes_df, trips_dict, last_stop_by_trip, stop_routes_dict
+    global stops_df, bus_routes_df, trips_dict, last_stop_by_trip, stop_routes_dict, gtfs_status
     global _stops_lat_arr, _stops_lon_arr
 
     boot = sqlite3.connect(DB_PATH)
@@ -93,6 +94,7 @@ def _load_gtfs_to_memory():
     _stops_lon_arr    = new_stops_df["stop_lon"].values
     _db_module._db_generation += 1
 
+    gtfs_status = "ready"
     gc.collect()
     try:
         import ctypes
