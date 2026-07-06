@@ -129,7 +129,7 @@ async function showRoute(shapeId, tripId, routeShort, headsign, routeColor, plat
 
   currentTripStops = stData;
   currentVehicleTargetStopId = platformStopId || currentStopId;
-  startVehicleTracking(tripId, lineColor, vehicleId);
+  startVehicleTracking(tripId, lineColor, vehicleId, routeShort);
 
   // タイムラインは shape の有無に関わらず常に表示（データを渡して再利用）
   renderTimeline(stData, lineColor, platformStopId);
@@ -427,7 +427,7 @@ function updateVehiclePanel(pos, lineColor, vehicleId = null) {
     ${currentStopHtml}`;
 }
 
-async function updateVehicleMarker(tripId, lineColor, vehicleId = null) {
+async function updateVehicleMarker(tripId, lineColor, vehicleId = null, routeShort = null) {
   try {
     const res = await fetch(`${API}/api/trips/${tripId}/vehicle`);
     let pos = res.ok ? await res.json() : null;
@@ -438,8 +438,9 @@ async function updateVehicleMarker(tripId, lineColor, vehicleId = null) {
       const res2 = await fetch(`${API}/api/vehicles/${encodeURIComponent(vehicleId)}/position`);
       if (res2.ok) {
         const p2 = await res2.json();
-        // 別のtripを走行中の場合のみ表示（同じtripなら通常追跡と同じ）
-        if (p2 && p2.current_trip_id !== tripId) {
+        // 別のtripを走行中、かつ同じ路線（replacementバス等の別路線は除外）の場合のみ表示
+        if (p2 && p2.current_trip_id !== tripId &&
+            (!routeShort || p2.current_route_short_name === routeShort)) {
           pos = p2;
           isPreTurnaround = true;
         }
@@ -479,10 +480,10 @@ async function updateVehicleMarker(tripId, lineColor, vehicleId = null) {
   }
 }
 
-function startVehicleTracking(tripId, lineColor, vehicleId = null) {
+function startVehicleTracking(tripId, lineColor, vehicleId = null, routeShort = null) {
   stopVehicleTracking();
-  updateVehicleMarker(tripId, lineColor, vehicleId);
-  vehicleRefreshTimer = setInterval(() => updateVehicleMarker(tripId, lineColor, vehicleId), 15000);
+  updateVehicleMarker(tripId, lineColor, vehicleId, routeShort);
+  vehicleRefreshTimer = setInterval(() => updateVehicleMarker(tripId, lineColor, vehicleId, routeShort), 15000);
 }
 
 function stopVehicleTracking() {

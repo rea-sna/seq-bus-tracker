@@ -1,6 +1,7 @@
 import requests
 from fastapi import APIRouter, HTTPException, Request
 
+from core.arrivals import _route_info
 from core.feeds import get_vehicle_feed
 from routers.deps import limiter
 
@@ -23,15 +24,18 @@ def get_vehicle_position_by_id(request: Request, vehicle_id: str):
         if vp.vehicle.id != vehicle_id:
             continue
         pos = vp.position
+        current_trip_id = vp.trip.trip_id or None
+        _, current_route_short, _, _, _ = _route_info(current_trip_id) if current_trip_id else (None, None, "", "", "")
         return {
-            "lat":             float(pos.latitude),
-            "lon":             float(pos.longitude),
-            "bearing":         float(pos.bearing),
-            "speed":           float(pos.speed),
-            "timestamp":       int(vp.timestamp) if vp.timestamp else None,
-            "current_stop_id": vp.stop_id or None,
-            "current_status":  int(vp.current_status),
-            "current_trip_id": vp.trip.trip_id or None,
+            "lat":                     float(pos.latitude),
+            "lon":                     float(pos.longitude),
+            "bearing":                 float(pos.bearing),
+            "speed":                   float(pos.speed),
+            "timestamp":               int(vp.timestamp) if vp.timestamp else None,
+            "current_stop_id":         vp.stop_id or None,
+            "current_status":          int(vp.current_status),
+            "current_trip_id":         current_trip_id,
+            "current_route_short_name": current_route_short,
         }
 
     return None
