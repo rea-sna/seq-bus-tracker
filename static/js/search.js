@@ -388,9 +388,9 @@ async function openStopTimetableModal(stopId, stopName, routeId, routeShort, rou
     `<span class="routes-badge" style="background:${bg};color:${fg};font-family:'Space Mono',monospace;font-size:13px;font-weight:700;padding:3px 10px;border-radius:5px">${escHtml(routeShort)}</span>
      <span style="font-size:14px;font-weight:600">${escHtml(stopName)}</span>`;
 
-  const today = new Date();
+  const today = nowInBrisbane();
   document.getElementById('stop-tt-date').value =
-    `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    `${today.year}-${String(today.month).padStart(2, '0')}-${String(today.day).padStart(2, '0')}`;
 
   document.getElementById('stop-tt-overlay').classList.add('open');
   document.getElementById('stop-tt-modal').classList.add('open');
@@ -412,9 +412,9 @@ async function loadStopTimetableModal() {
     }
 
     const [y, m, d] = date.split('-').map(Number);
-    const now = new Date();
-    const isToday = now.getFullYear() === y && (now.getMonth() + 1) === m && now.getDate() === d;
-    const nowMins = isToday ? now.getHours() * 60 + now.getMinutes() : -1;
+    const now = nowInBrisbane();
+    const isToday = now.year === y && now.month === m && now.day === d;
+    const nowMins = isToday ? now.hour * 60 + now.minute : -1;
 
     const groups = [
       { label: t('timetableMorning'), items: [] },

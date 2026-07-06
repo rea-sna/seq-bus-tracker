@@ -126,6 +126,33 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
+// ── Timezone (常にブリスベン時間で表示。端末側のTZ設定は無視する) ───────────────
+const BRISBANE_TZ = 'Australia/Brisbane';
+
+// 現在時刻をブリスベン時間の年月日時分秒に分解して取得
+function nowInBrisbane() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: BRISBANE_TZ,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).formatToParts(new Date());
+  const get = type => parts.find(p => p.type === type).value;
+  return {
+    year: +get('year'), month: +get('month'), day: +get('day'),
+    hour: +get('hour'), minute: +get('minute'), second: +get('second'),
+  };
+}
+
+// Date を "HH:MM"（ブリスベン時間）にフォーマット
+function formatBrisbaneTime(date) {
+  return date.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: BRISBANE_TZ });
+}
+
+// Date を "YYYY-MM-DD"（ブリスベン時間）にフォーマット。日付比較のキーとして使う
+function brisbaneDateKey(date) {
+  return date.toLocaleDateString('en-CA', { timeZone: BRISBANE_TZ });
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function setRtUnavailableBanner(show) {
   const el = document.getElementById('rt-unavailable-banner');

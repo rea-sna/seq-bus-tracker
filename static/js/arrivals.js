@@ -336,7 +336,7 @@ function renderArrivals(arrivals, showAll = false) {
     const bgColor = resolveRouteColor(a.route_short_name, a.route_color) || 'var(--accent2)';
     const textColor = (a.route_short_name === 'M1' || a.route_short_name === 'M2') ? '#000000' : (a.route_text_color || '#ffffff');
 
-    const clockTime = new Date(a.arrival_time * 1000).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false });
+    const clockTime = formatBrisbaneTime(new Date(a.arrival_time * 1000));
 
     const delayMin = Math.round((a.delay_seconds || 0) / 60);
     const delayBadge = delayMin > 1
@@ -357,9 +357,9 @@ function renderArrivals(arrivals, showAll = false) {
     let arrivalTimeLabel = '';
     if (timetableMode) {
       const d = new Date(a.arrival_time * 1000);
-      const todayStr = new Date().toDateString();
-      const arrStr = d.toDateString();
-      arrivalTimeLabel = arrStr === todayStr ? t('today') : d.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
+      const todayStr = brisbaneDateKey(new Date());
+      const arrStr = brisbaneDateKey(d);
+      arrivalTimeLabel = arrStr === todayStr ? t('today') : d.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: BRISBANE_TZ });
     }
     const arrivalTimeHtml = timetableMode
       ? `<div class="minutes later">${clockTime}</div>
@@ -496,12 +496,12 @@ function switchToTimetableMode() {
   const lbl = document.getElementById('arrivals-section-label');
   if (lbl) { lbl.setAttribute('data-i18n', 'timetableMode'); lbl.textContent = t('timetableMode'); }
 
-  const now = new Date();
-  const yr = now.getFullYear();
-  const mo = String(now.getMonth() + 1).padStart(2, '0');
-  const dy = String(now.getDate()).padStart(2, '0');
-  const hh = String(now.getHours()).padStart(2, '0');
-  const mm = String(now.getMinutes()).padStart(2, '0');
+  const now = nowInBrisbane();
+  const yr = now.year;
+  const mo = String(now.month).padStart(2, '0');
+  const dy = String(now.day).padStart(2, '0');
+  const hh = String(now.hour).padStart(2, '0');
+  const mm = String(now.minute).padStart(2, '0');
   const dateInput = document.getElementById('timetable-date-input');
   const timeInput = document.getElementById('timetable-time-input');
   if (!dateInput.value) dateInput.value = `${yr}-${mo}-${dy}`;

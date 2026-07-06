@@ -521,8 +521,7 @@ function renderTimeline(data, lineColor, stopId) {
     function formatTime(s) {
       // static_time は "HH:MM:SS"（25時間表記あり）
       if (s.predicted_unix) {
-        return new Date(s.predicted_unix * 1000)
-          .toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false });
+        return formatBrisbaneTime(new Date(s.predicted_unix * 1000));
       }
       if (s.static_time) {
         const parts = s.static_time.split(':');
