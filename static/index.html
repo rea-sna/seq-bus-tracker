@@ -4,7 +4,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
+  <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex, notranslate, max-snippet:0, max-image-preview:none, max-video-preview:0">
+  <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+  <meta name="bingbot" content="noindex, nofollow, noarchive, nosnippet">
+  <meta name="GPTBot" content="noindex, nofollow">
+  <meta name="anthropic-ai" content="noindex, nofollow">
+  <meta name="CCBot" content="noindex, nofollow">
   <title>SEQ Bus Tracker</title>
   <link
     href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;700&display=swap"
@@ -21,6 +26,16 @@
 </head>
 
 <body>
+
+  <div id="server-overlay">
+    <div id="server-overlay-card">
+      <div id="server-overlay-icon"></div>
+      <div id="server-overlay-title"></div>
+      <div id="server-overlay-msg"></div>
+      <button id="server-overlay-retry" onclick="retryServerConnection()" style="display:none"></button>
+    </div>
+  </div>
+
   <div class="container">
 
     <header>
@@ -183,17 +198,27 @@
   <div id="alert-overlay" onclick="closeAlertPanel()"></div>
   <div id="alert-panel">
     <div class="alert-panel-header">
-      <div class="alert-panel-title">
-        <span class="alert-bell-icon">🔔</span>
-        <span data-i18n="alertPanelTitle">Service Alerts</span>
+      <div class="alert-panel-header-top">
+        <div class="alert-panel-title">
+          <span class="alert-bell-icon">🔔</span>
+          <span data-i18n="alertPanelTitle">Service Alerts</span>
+        </div>
+        <button class="alert-panel-close" onclick="closeAlertPanel()">×</button>
       </div>
-      <button class="alert-panel-close" onclick="closeAlertPanel()">×</button>
+      <div id="alert-sort-bar"></div>
     </div>
     <div id="alert-panel-list"></div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js"></script>
+  <script src="js/state.js"></script>
+  <script src="js/i18n.js"></script>
+  <script src="js/utils.js"></script>
+  <script src="js/favorites.js"></script>
+  <script src="js/map.js"></script>
+  <script src="js/search.js"></script>
+  <script src="js/arrivals.js"></script>
+  <script src="js/alerts.js"></script>
 </body>
 
 </html>

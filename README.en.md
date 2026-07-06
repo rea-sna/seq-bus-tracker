@@ -156,7 +156,15 @@ A `Procfile` is included. GTFS data is downloaded automatically on startup.
 └── static/
     ├── index.html
     ├── style.css
-    └── app.js
+    └── js/
+        ├── state.js
+        ├── i18n.js
+        ├── utils.js
+        ├── favorites.js
+        ├── map.js
+        ├── search.js
+        ├── arrivals.js
+        └── alerts.js
 ```
 
 ---
